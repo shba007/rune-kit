@@ -21,25 +21,26 @@ pub enum RuntimeError {
 }
 
 #[derive(Serialize, Deserialize)]
-struct GitExecRequest {
-    args: Vec<String>,
-    cwd: Option<String>,
+pub struct CmdExecRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct GitExecResponse {
-    success: bool,
-    exit_code: Option<i32>,
-    stdout: String,
-    stderr: String,
+pub struct CmdExecResponse {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
 }
 
-// Declarative host_fn! macro generates `fn host_git_exec() -> extism::Function`
-host_fn!(host_git_exec(input: String) -> String {
-    let req: GitExecRequest = serde_json::from_str(&input)
-        .map_err(|e| ExtismError::msg(format!("Invalid git request payload: {}", e)))?;
+// Declarative host_fn! macro generates the callback for Extism
+host_fn!(host_cmd_exec(input: String) -> String {
+    let req: CmdExecRequest = serde_json::from_str(&input)
+        .map_err(|e| ExtismError::msg(format!("Invalid command request payload: {}", e)))?;
 
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(&req.program);
     cmd.args(&req.args);
 
     if let Some(cwd) = &req.cwd {
@@ -50,7 +51,7 @@ host_fn!(host_git_exec(input: String) -> String {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let resp = GitExecResponse {
+            let resp = CmdExecResponse {
                 success: output.status.success(),
                 exit_code: output.status.code(),
                 stdout,
@@ -61,11 +62,11 @@ host_fn!(host_git_exec(input: String) -> String {
             Ok(json_str)
         }
         Err(e) => {
-            let resp = GitExecResponse {
+            let resp = CmdExecResponse {
                 success: false,
                 exit_code: None,
                 stdout: String::new(),
-                stderr: format!("Host 'git' executable failed or not found in PATH: {}", e),
+                stderr: format!("Host binary '{}' failed or not found in PATH: {}", req.program, e),
             };
             let json_str = serde_json::to_string(&resp)
                 .map_err(|e| ExtismError::msg(e.to_string()))?;
@@ -114,18 +115,14 @@ impl WasmPluginInstance {
 
         let manifest = manifest.with_config(params.into_iter());
 
-        // host_git_exec no longer builds a Function via a call — it *is* the
-        // raw callback. Register it through PluginBuilder::with_function,
-        // giving explicit wasm-side signature (PTR in, PTR out, since we pass
-        // JSON-encoded strings) and a UserData slot (unused here, so `()`).
         let plugin = PluginBuilder::new(manifest)
             .with_wasi(true)
             .with_function(
-                "host_git_exec",
+                "host_cmd_exec",
                 [PTR],
                 [PTR],
                 UserData::new(()),
-                host_git_exec,
+                host_cmd_exec,
             )
             .build()
             .map_err(|e| RuntimeError::ExtismInit(e.to_string()))?;

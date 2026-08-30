@@ -45,6 +45,14 @@ cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/<rune
 
 * **Tools triggered:** `sequentialthinking` across iterative reasoning steps.
 
+
+* **Video Metadata Inspection (Zero Disk Write):**
+> "Inspect the video metadata for `[https://www.youtube.com/shorts/-uS1wD3jYec](https://www.youtube.com/shorts/-uS1wD3jYec)`. Show me the available formats, duration, and channel name."
+
+
+* **Tool triggered:** `inspect_video_metadata`
+
+
 ## Test CLI
 
 bunx @modelcontextprotocol/inspector --tui -- D:/Projects/Practice/rune-kit/target/release/rune.exe run rune_fs -p allowed_dir=D:/Projects/Practice/rune-kit/test-dir

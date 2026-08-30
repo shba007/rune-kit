@@ -18,11 +18,24 @@
 		},
 		"rune-memory": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_memory", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir"]
+			"args": ["run", "rune_memory", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir", "-p", "memory_file=graph_memory.json"]
 		},
 		"rune-sequentialthinking": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
 			"args": ["run", "rune_sequentialthinking"]
+		},
+		"rune-media": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": [
+				"run",
+				"rune_media",
+				"-p",
+				"allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir",
+				"-p",
+				"cookies_dir=D:\\Projects\\Practice\\rune-kit\\test-dir\\cookies",
+				"-p",
+				"player_client=android"
+			]
 		}
 	}
 }
