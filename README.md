@@ -39,6 +39,11 @@ cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/<rune
 
 * **Tools triggered:** `create_entities`, `create_relations`, `read_graph`
 
+* **For `rune-sequential-thinking`:**
+
+> "Use rune-sequential-thinking mcp to design an optimal database schema for an e-commerce order management system. Break down your reasoning into consecutive thought steps, explore an alternative branch for event-sourcing, and synthesize the final decision."
+
+* **Tools triggered:** `sequentialthinking` across iterative reasoning steps.
 
 ## Test CLI
 
