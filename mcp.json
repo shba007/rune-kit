@@ -1,0 +1,16 @@
+{
+	"mcpServers": {
+		"rune-fs": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": ["run", "rune_fs", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir"]
+		},
+		"rune-time": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": ["run", "rune_time", "-p", "default_timezone=Asia/Kolkata"]
+		},
+		"rune-fetch": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": ["run", "rune_fetch"]
+		}
+	}
+}

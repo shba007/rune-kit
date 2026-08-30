@@ -56,11 +56,19 @@ impl WasmPluginInstance {
     ) -> Result<Self, RuntimeError> {
         let mut manifest = Manifest::new([Wasm::data(bytes)]);
 
+        // Grant outbound network access (allow all hosts or specific domain)
+        if let Some(allowed_hosts) = params.get("allowed_hosts") {
+            for host in allowed_hosts.split(',') {
+                manifest = manifest.with_allowed_host(host.trim().to_string());
+            }
+        } else {
+            manifest = manifest.with_allowed_host("*".to_string());
+        }
+
         // Grant WASI filesystem access to the allowed directory if specified
         if let Some(allowed_dir) = params.get("allowed_dir") {
             manifest = manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
         }
-        // Also allow access to the relative working directory
         manifest = manifest.with_allowed_path(".".to_string(), ".");
 
         let manifest = manifest.with_config(params.into_iter());
