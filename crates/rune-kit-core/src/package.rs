@@ -96,17 +96,29 @@ impl PackageManager {
                         };
                         (final_name, final_ver, info.description)
                     }
-                    Err(_) => (
+                    Err(err) => {
+                        eprintln!(
+                            "[warn] Failed to call mcp_info on '{}': {}",
+                            default_name, err
+                        );
+                        (
+                            default_name,
+                            version.unwrap_or_else(|| "0.1.0".to_string()),
+                            None,
+                        )
+                    }
+                },
+                Err(err) => {
+                    eprintln!(
+                        "[warn] Extism failed to load '{}' during probe: {}",
+                        default_name, err
+                    );
+                    (
                         default_name,
                         version.unwrap_or_else(|| "0.1.0".to_string()),
                         None,
-                    ),
-                },
-                Err(_) => (
-                    default_name,
-                    version.unwrap_or_else(|| "0.1.0".to_string()),
-                    None,
-                ),
+                    )
+                }
             };
 
         let hash: String = Sha256::digest(&bytes)

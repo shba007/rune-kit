@@ -11,6 +11,10 @@
 		"rune-fetch": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
 			"args": ["run", "rune_fetch"]
+		},
+		"rune-git": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": ["run", "rune_git", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir"]
 		}
 	}
 }

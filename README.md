@@ -1,12 +1,18 @@
 cargo build --release
 
-cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/<rune-tool-name>.wasm
-
 cargo install --path crates/rune-kit-cli
+
+cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/<rune-tool-name>.wasm
 
 ## Test Prompt
 
 **Individual Prompts**
+
+* **For `rune-git`:**
+> "Check the current git status in the repository, show the last 3 commit logs, and check for any unstaged diffs."
+
+
+* **Tools triggered:** `git_status`, `git_log`, `git_diff_unstaged`
 
 * **For `rune-time`:**
 > "What is the current time in London, and what would that exact time convert to in New York?"
