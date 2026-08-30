@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/rune-kit-core", "crates/rune-kit-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Shirsendu Bairagi"]
+
+[workspace.dependencies]
+async-trait = "0.1"
+clap = { version = "4.6", features = ["derive"] }
+dirs = "6.0"
+extism = "1.30"
+reqwest = { version = "0.13", features = ["json", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+thiserror = "2.0"
+tokio = { version = "1.53", features = ["full"] }
