@@ -21,5 +21,6 @@ pub struct InstalledPlugin {
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
+    #[serde(rename = "inputSchema", alias = "input_schema")]
     pub input_schema: serde_json::Value,
 }

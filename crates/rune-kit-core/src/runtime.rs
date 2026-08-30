@@ -43,8 +43,16 @@ impl WasmPluginInstance {
         bytes: Vec<u8>,
         params: HashMap<String, String>,
     ) -> Result<Self, RuntimeError> {
-        // Build the manifest and pass the config iterator directly
-        let manifest = Manifest::new([Wasm::data(bytes)]).with_config(params.into_iter());
+        let mut manifest = Manifest::new([Wasm::data(bytes)]);
+
+        // Grant WASI filesystem access to the allowed directory if specified
+        if let Some(allowed_dir) = params.get("allowed_dir") {
+            manifest = manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
+        }
+        // Also allow access to the relative working directory
+        manifest = manifest.with_allowed_path(".".to_string(), ".");
+
+        let manifest = manifest.with_config(params.into_iter());
 
         // Initialize Extism plugin with WASI enabled
         let plugin = Plugin::new(&manifest, [], true)
@@ -60,7 +68,7 @@ impl WasmPluginInstance {
     pub fn list_tools(&mut self) -> Result<Vec<ToolDefinition>, RuntimeError> {
         let raw = self
             .plugin
-            .call::<&str, String>("mcp_list_tools", "")
+            .call::<(), String>("mcp_list_tools", ())
             .map_err(|e| RuntimeError::Execution(e.to_string()))?;
 
         let tools: Vec<ToolDefinition> = serde_json::from_str(&raw)?;

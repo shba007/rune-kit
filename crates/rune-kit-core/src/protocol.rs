@@ -15,12 +15,10 @@ impl McpRouter {
         }
     }
 
-    /// Register a WASM plugin instance under a specific namespace
     pub fn register(&mut self, namespace: String, instance: WasmPluginInstance) {
         self.instances.insert(namespace, instance);
     }
 
-    /// Route and handle incoming JSON-RPC 2.0 requests
     pub fn handle_jsonrpc(&mut self, request_str: &str) -> Option<Value> {
         let req: Value = match serde_json::from_str(request_str) {
             Ok(val) => val,
@@ -36,31 +34,60 @@ impl McpRouter {
         let id = req.get("id");
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
+        // Ignore client notifications (requests without an id) per JSON-RPC 2.0 spec
+        if method.starts_with("notifications/") || method == "initialized" {
+            return None;
+        }
+
         match method {
             "initialize" => Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
+                    "capabilities": {
+                        "tools": { "listChanged": false },
+                        "resources": {},
+                        "prompts": {}
+                    },
                     "serverInfo": { "name": "rune-kit", "version": "0.1.0" }
                 }
+            })),
+            "ping" => Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {}
             })),
             "tools/list" => {
                 let mut all_tools = Vec::new();
                 for (ns, instance) in self.instances.iter_mut() {
-                    if let Ok(tools) = instance.list_tools() {
-                        for tool in tools {
-                            all_tools.push(json!({
-                                "name": format!("{}__{}", ns, tool.name),
-                                "description": tool.description,
-                                "inputSchema": tool.input_schema
-                            }));
+                    match instance.list_tools() {
+                        Ok(tools) => {
+                            for tool in tools {
+                                all_tools.push(json!({
+                                    "name": format!("{}__{}", ns, tool.name),
+                                    "description": tool.description,
+                                    "inputSchema": tool.input_schema
+                                }));
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[Rune Error] Failed to list tools from '{}': {}", ns, err);
                         }
                     }
                 }
                 Some(json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": all_tools } }))
             }
+            "resources/list" => Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "resources": [] }
+            })),
+            "prompts/list" => Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "prompts": [] }
+            })),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let full_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
@@ -102,12 +129,11 @@ impl McpRouter {
             _ => Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "error": { "code": -32601, "message": "Method not found" }
+                "error": { "code": -32601, "message": format!("Method '{}' not found", method) }
             })),
         }
     }
 
-    /// Run the standard input/output transport loop
     pub fn run_stdio(&mut self) -> Result<(), io::Error> {
         let stdin = io::stdin();
         let mut stdout = io::stdout();
