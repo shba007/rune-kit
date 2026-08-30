@@ -32,19 +32,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             println!(
-                "{:<16} {:<10} {:<12} {}",
-                "NAME", "VERSION", "SOURCE", "SHA256"
+                "{:<14} {:<10} {:<36} {}",
+                "NAME", "VERSION", "DESCRIPTION", "SOURCE"
             );
-            println!("{}", "-".repeat(56));
+            println!("{}", "-".repeat(78));
             for (name, p) in &lockfile.plugins {
-                let short_sha = if p.sha256.len() >= 8 {
-                    &p.sha256[..8]
+                let desc = p.description.as_deref().unwrap_or("-");
+                let short_desc = if desc.len() > 34 {
+                    format!("{}...", &desc[..31])
                 } else {
-                    &p.sha256
+                    desc.to_string()
                 };
                 println!(
-                    "{:<16} {:<10} {:<12} {}...",
-                    name, p.version, p.source, short_sha
+                    "{:<14} {:<10} {:<36} {}",
+                    name, p.version, short_desc, p.source
                 );
             }
         }

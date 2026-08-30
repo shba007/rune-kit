@@ -1,5 +1,5 @@
 // crates/rune-kit-core/src/runtime.rs
-use crate::manifest::ToolDefinition;
+use crate::manifest::{PluginInfo, ToolDefinition};
 use extism::{Manifest, Plugin, Wasm};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -35,6 +35,17 @@ impl WasmPluginInstance {
             .map_err(|_| RuntimeError::FileNotFound(path_ref.display().to_string()))?;
 
         Self::load_from_bytes(name, wasm_bytes, params)
+    }
+
+    /// Probe the WASM binary for compile-time metadata
+    pub fn get_info(&mut self) -> Result<PluginInfo, RuntimeError> {
+        let raw = self
+            .plugin
+            .call::<(), String>("mcp_info", ())
+            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
+
+        let info: PluginInfo = serde_json::from_str(&raw)?;
+        Ok(info)
     }
 
     /// Load a WASM plugin directly from raw in-memory bytes

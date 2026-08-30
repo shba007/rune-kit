@@ -1,5 +1,6 @@
 // crates/rune-kit-core/src/package.rs
 use crate::manifest::{InstalledPlugin, Lockfile};
+use crate::runtime::WasmPluginInstance;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -63,32 +64,56 @@ impl PackageManager {
         target: &str,
         version: Option<String>,
     ) -> Result<InstalledPlugin, PackageError> {
-        let (name, bytes, ver, source) = if target.ends_with(".wasm") && Path::new(target).exists()
-        {
-            // Case 1: Local file path
-            let path = Path::new(target);
-            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-            let bytes = std::fs::read(path)?;
-            (name, bytes, "local".to_string(), target.to_string())
-        } else if target.starts_with("http://") || target.starts_with("https://") {
-            // Case 2: Direct HTTP(S) URL
-            let res = reqwest::get(target).await?.bytes().await?;
-            let name = target
-                .split('/')
-                .last()
-                .unwrap_or("plugin")
-                .replace(".wasm", "");
-            (name, res.to_vec(), "remote".to_string(), target.to_string())
-        } else {
-            // Case 3: Remote Registry Resolution
-            self.fetch_from_registry(target, version).await?
-        };
+        let (default_name, bytes, source) =
+            if target.ends_with(".wasm") && Path::new(target).exists() {
+                let path = Path::new(target);
+                let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+                let bytes = std::fs::read(path)?;
+                (stem, bytes, target.to_string())
+            } else if target.starts_with("http://") || target.starts_with("https://") {
+                let res = reqwest::get(target).await?.bytes().await?;
+                let name = target
+                    .split('/')
+                    .last()
+                    .unwrap_or("plugin")
+                    .replace(".wasm", "");
+                (name, res.to_vec(), target.to_string())
+            } else {
+                self.fetch_from_registry(target, version.clone()).await?
+            };
 
-        // Compute SHA-256 for tampering prevention
+        // Probe the WASM binary for embedded compile-time metadata (name, version, description)
+        let (name, ver, desc) =
+            match WasmPluginInstance::load_from_bytes(&default_name, bytes.clone(), HashMap::new())
+            {
+                Ok(mut instance) => match instance.get_info() {
+                    Ok(info) => {
+                        let final_ver = version.unwrap_or(info.version);
+                        let final_name = if default_name.is_empty() {
+                            info.name
+                        } else {
+                            default_name
+                        };
+                        (final_name, final_ver, info.description)
+                    }
+                    Err(_) => (
+                        default_name,
+                        version.unwrap_or_else(|| "0.1.0".to_string()),
+                        None,
+                    ),
+                },
+                Err(_) => (
+                    default_name,
+                    version.unwrap_or_else(|| "0.1.0".to_string()),
+                    None,
+                ),
+            };
+
         let hash: String = Sha256::digest(&bytes)
             .iter()
             .map(|b| format!("{:02x}", b))
             .collect();
+
         let file_name = format!("{}-{}.wasm", name, ver);
         let dest = self.base_dir.join("plugins").join(&file_name);
 
@@ -96,6 +121,7 @@ impl PackageManager {
 
         let installed = InstalledPlugin {
             name: name.clone(),
+            description: desc,
             version: ver,
             binary_path: format!("plugins/{}", file_name),
             sha256: hash,
@@ -128,8 +154,7 @@ impl PackageManager {
         &self,
         name: &str,
         version: Option<String>,
-    ) -> Result<(String, Vec<u8>, String, String), PackageError> {
-        // Points to our centralized registry index JSON
+    ) -> Result<(String, Vec<u8>, String), PackageError> {
         let registry_url =
             "https://raw.githubusercontent.com/shba007/rune-tools/main/registry/index.json";
         let client = reqwest::Client::new();
@@ -151,6 +176,7 @@ impl PackageManager {
             .bytes()
             .await?
             .to_vec();
-        Ok((name.to_string(), bytes, ver, "registry".to_string()))
+
+        Ok((name.to_string(), bytes, "registry".to_string()))
     }
 }

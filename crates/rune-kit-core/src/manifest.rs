@@ -1,5 +1,14 @@
+// crates/rune-kit-core/src/manifest.rs
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PluginInfo {
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Lockfile {
@@ -10,6 +19,8 @@ pub struct Lockfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPlugin {
     pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub version: String,
     pub binary_path: String,
     pub sha256: String,
