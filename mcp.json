@@ -15,6 +15,10 @@
 		"rune-git": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
 			"args": ["run", "rune_git", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir"]
+		},
+		"rune-memory": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": ["run", "rune_memory", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir", "-p", "memory_file=graph_memory.json"]
 		}
 	}
 }

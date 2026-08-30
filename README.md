@@ -33,6 +33,12 @@ cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/<rune
 
 * **Tools triggered:** `fetch`
 
+* **For `rune-memory`:**
+> "Create an entity for 'Alice' of type 'Person' with observation 'Speaks Rust and TypeScript'. Create an entity for 'Project Rune' of type 'Software'. Link Alice to Project Rune with relation 'maintains'. Then read the entire graph."
+
+
+* **Tools triggered:** `create_entities`, `create_relations`, `read_graph`
+
 
 ## Test CLI
 
