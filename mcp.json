@@ -1,12 +1,18 @@
 {
 	"mcpServers": {
-		"rune-fs": {
+		"rune-filesystem": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_fs", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir"]
+			"args": ["run", "rune_filesystem"],
+			"env": {
+				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+			}
 		},
 		"rune-time": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_time", "-p", "default_timezone=Asia/Kolkata"]
+			"args": ["run", "rune_time"],
+			"env": {
+				"DEFAULT_TIMEZONE": "Asia/Kolkata"
+			}
 		},
 		"rune-fetch": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
@@ -14,11 +20,18 @@
 		},
 		"rune-git": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_git", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir"]
+			"args": ["run", "rune_git"],
+			"env": {
+				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+			}
 		},
 		"rune-memory": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_memory", "-p", "allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir", "-p", "memory_file=graph_memory.json"]
+			"args": ["run", "rune_memory"],
+			"env": {
+				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir",
+				"MEMORY_FILE": "graph_memory.json"
+			}
 		},
 		"rune-sequentialthinking": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
@@ -26,16 +39,22 @@
 		},
 		"rune-media": {
 			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": [
-				"run",
-				"rune_media",
-				"-p",
-				"allowed_dir=D:\\Projects\\Practice\\rune-kit\\test-dir",
-				"-p",
-				"cookies_dir=D:\\Projects\\Practice\\rune-kit\\test-dir\\cookies",
-				"-p",
-				"player_client=android"
-			]
+			"args": ["run", "rune_media"],
+			"env": {
+				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir",
+				"COOKIES_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir\\cookies",
+				"PLAYER_CLIENT": "android"
+			}
+		},
+		"rune-print": {
+			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
+			"args": ["run", "rune_print"],
+			"env": {
+				"PRINTER_IP": "192.168.1.2",
+				"IPP_PATH": "/ipp/printer",
+				"USE_HTTPS": "true",
+				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+			}
 		}
 	}
 }

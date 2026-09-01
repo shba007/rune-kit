@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "rune-kit-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "dirs",
@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "rune-kit-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "dirs",

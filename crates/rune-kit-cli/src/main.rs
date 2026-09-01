@@ -51,7 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Run { plugin, all, param } => {
             let mut router = McpRouter::new();
-            let params_map: HashMap<String, String> = param.into_iter().collect();
+            let mut params_map = resolve_host_env_params();
+            params_map.extend(param.into_iter()); // CLI flags strictly override ENV
 
             if all {
                 let lockfile = pm.load_lockfile();
@@ -88,4 +89,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Resolves known host uppercase environment variables into plugin config parameters.
+fn resolve_host_env_params() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Ok(dir) = std::env::var("ALLOWED_DIR") {
+        map.insert("allowed_dir".to_string(), dir);
+    }
+    if let Ok(hosts) = std::env::var("ALLOWED_HOSTS") {
+        map.insert("allowed_hosts".to_string(), hosts);
+    }
+    if let Ok(printer_ip) = std::env::var("PRINTER_IP") {
+        map.insert("printer_ip".to_string(), printer_ip);
+    }
+    map
 }

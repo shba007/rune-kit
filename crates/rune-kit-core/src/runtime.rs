@@ -108,6 +108,10 @@ impl WasmPluginInstance {
             manifest = manifest.with_allowed_host("*".to_string());
         }
 
+        if let Some(printer_ip) = params.get("printer_ip").filter(|s| !s.is_empty()) {
+            manifest = manifest.with_allowed_host(printer_ip.clone());
+        }
+
         if let Some(allowed_dir) = params.get("allowed_dir") {
             manifest = manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
         }
