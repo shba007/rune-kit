@@ -1,0 +1,81 @@
+name: Rune CI
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  build:
+    if: >
+      !(
+        contains(github.event.head_commit.message, 'ci(release):') ||
+        contains(github.event.head_commit.message, '[skip ci]') ||
+        startsWith(github.event.head_commit.message, 'Merge pull request') ||
+        startsWith(github.event.head_commit.message, 'Merge branch')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 🛠️ Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 📦 Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 🧼 Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: 🧹 Lint Code
+        run: cargo clippy --workspace --all-targets -- -D warnings || echo "Linting failed, but continuing"
+
+      - name: ⚙️ Build Workspace
+        run: cargo build --workspace
+
+      - name: ✅ Test Code
+        run: cargo test --workspace
+
+      - name: 🤖 AutoFix Formatting
+        run: cargo fmt --all
+
+      - name: 🤖 Commit Formatting Fixes
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: 'chore: apply code fixes [skip ci]'
+
+      - name: 🛠️ Install cargo-edit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-edit
+
+      - name: 🏷️ Bump Workspace Version
+        id: bump_version
+        run: |
+          cargo set-version --bump patch --workspace
+          cargo update --workspace -q
+          NEW_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 🔀 Create or Update Pull Request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: 'ci(release): update version'
+          title: 'ci(release): update version'
+          body: |
+            Bumps workspace version to `${{ steps.bump_version.outputs.version }}`.
+
+            Merging this into `main` will publish a GitHub Release and trigger the
+            cross-platform binary build in `deploy.yml`.
+          branch: 'release/update-version'
+          base: 'develop'
+          delete-branch: true

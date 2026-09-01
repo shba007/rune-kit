@@ -38,11 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", "-".repeat(78));
             for (name, p) in &lockfile.plugins {
                 let desc = p.description.as_deref().unwrap_or("-");
-                let short_desc = if desc.len() > 34 {
-                    format!("{}...", &desc[..31])
-                } else {
-                    desc.to_string()
-                };
+                let short_desc = truncate_display(desc, 34);
                 println!(
                     "{:<14} {:<10} {:<36} {}",
                     name, p.version, short_desc, p.source
@@ -81,14 +77,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             router.run_stdio()?;
         }
         Commands::Update { name } => {
-            println!(
-                "Checking updates for {:?}...",
+            eprintln!(
+                "rune update is not implemented yet (requested: {}). \
+                 Reinstall with `rune install <target>` to fetch the latest version for now.",
                 name.as_deref().unwrap_or("all plugins")
             );
+            std::process::exit(1);
         }
     }
 
     Ok(())
+}
+
+/// Truncates on a char boundary (never a byte boundary) so descriptions
+/// containing multi-byte UTF-8 characters can't panic the `list` command.
+fn truncate_display(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
+    truncated.push_str("...");
+    truncated
 }
 
 /// Dynamically injects all host environment variables into Extism config as lowercase keys.

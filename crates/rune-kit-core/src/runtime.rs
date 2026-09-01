@@ -35,13 +35,9 @@ pub struct CmdExecResponse {
     pub stderr: String,
 }
 
-// Declarative host_fn! macro generates the callback for Extism
-// crates/rune-kit-core/src/runtime.rs -> inside host_cmd_exec host_fn!
-
 host_fn!(host_cmd_exec(input: String) -> String {
     let req: CmdExecRequest = serde_json::from_str(&input)
         .map_err(|e| ExtismError::msg(format!("Invalid command request payload: {}", e)))?;
-
 
     let mut cmd = Command::new(&req.program);
     cmd.args(&req.args);
@@ -66,7 +62,6 @@ host_fn!(host_cmd_exec(input: String) -> String {
             Ok(json_str)
         }
         Err(e) => {
-            eprintln!("[DEBUG 2/3 - HOST] Process spawn error: {}", e);
             let resp = CmdExecResponse {
                 success: false,
                 exit_code: None,
@@ -106,8 +101,12 @@ impl WasmPluginInstance {
         let mut manifest = Manifest::new([Wasm::data(bytes)]);
 
         if let Some(allowed_hosts) = params.get("allowed_hosts") {
-            for host in allowed_hosts.split(',') {
-                manifest = manifest.with_allowed_host(host.trim().to_string());
+            for host in allowed_hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|h| !h.is_empty())
+            {
+                manifest = manifest.with_allowed_host(host.to_string());
             }
         } else {
             manifest = manifest.with_allowed_host("*".to_string());
@@ -117,10 +116,15 @@ impl WasmPluginInstance {
             manifest = manifest.with_allowed_host(printer_ip.clone());
         }
 
+        // Only fall back to granting the host process's current directory
+        // when the caller hasn't scoped filesystem access explicitly — an
+        // explicit `allowed_dir` must be the *only* filesystem grant, or
+        // scoping it is meaningless.
         if let Some(allowed_dir) = params.get("allowed_dir") {
             manifest = manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
+        } else {
+            manifest = manifest.with_allowed_path(".".to_string(), ".");
         }
-        manifest = manifest.with_allowed_path(".".to_string(), ".");
 
         let manifest = manifest.with_config(params.into_iter());
 

@@ -1,0 +1,46 @@
+name: Rune Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    if: contains(github.event.head_commit.message, 'ci(release):')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Repo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 🛠️ Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 🔎 Read Workspace Version
+        id: version
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 🏷️ Tag Release
+        run: |
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      # Uses a PAT rather than the default GITHUB_TOKEN: a release created
+      # with the default token does not trigger other workflows' `on: release:
+      # published` events (GitHub's own loop-prevention), which would silently
+      # stop deploy.yml from ever running.
+      - name: 📝 Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes

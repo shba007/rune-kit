@@ -67,7 +67,16 @@ impl PackageManager {
         let (default_name, bytes, source) =
             if target.ends_with(".wasm") && Path::new(target).exists() {
                 let path = Path::new(target);
-                let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .ok_or_else(|| {
+                        PackageError::InvalidSpec(format!(
+                            "Cannot derive a plugin name from path '{}'",
+                            target
+                        ))
+                    })?
+                    .to_string();
                 let bytes = std::fs::read(path)?;
                 (stem, bytes, target.to_string())
             } else if target.starts_with("http://") || target.starts_with("https://") {
@@ -82,10 +91,15 @@ impl PackageManager {
                 self.fetch_from_registry(target, version.clone()).await?
             };
 
-        // Probe the WASM binary for embedded compile-time metadata (name, version, description)
+        // Probe the WASM binary for embedded compile-time metadata (name, version,
+        // description). This runs before the operator has vetted the plugin at
+        // all, so it gets no network access and no filesystem grant beyond the
+        // default sandbox — mcp_info needs neither.
+        let mut probe_params = HashMap::new();
+        probe_params.insert("allowed_hosts".to_string(), String::new());
+
         let (name, ver, desc) =
-            match WasmPluginInstance::load_from_bytes(&default_name, bytes.clone(), HashMap::new())
-            {
+            match WasmPluginInstance::load_from_bytes(&default_name, bytes.clone(), probe_params) {
                 Ok(mut instance) => match instance.get_info() {
                     Ok(info) => {
                         let final_ver = version.unwrap_or(info.version);
@@ -120,6 +134,9 @@ impl PackageManager {
                     )
                 }
             };
+
+        sanitize_path_component(&name, "plugin name")?;
+        sanitize_path_component(&ver, "plugin version")?;
 
         let hash: String = Sha256::digest(&bytes)
             .iter()
@@ -191,4 +208,16 @@ impl PackageManager {
 
         Ok((name.to_string(), bytes, "registry".to_string()))
     }
+}
+
+/// Rejects values that would let a plugin name/version escape `base_dir/plugins`
+/// when interpolated into a filename (path separators or `..` segments).
+fn sanitize_path_component(value: &str, label: &str) -> Result<(), PackageError> {
+    if value.is_empty() || value.contains(['/', '\\']) || value.contains("..") {
+        return Err(PackageError::InvalidSpec(format!(
+            "Invalid {}: '{}' must not contain path separators",
+            label, value
+        )));
+    }
+    Ok(())
 }

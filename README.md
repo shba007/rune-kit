@@ -368,9 +368,3 @@ record_live_stream
 
 
 * **Tool:** `printer_run_vendor_maintenance`
-
-## Test CLI
-
-bunx @modelcontextprotocol/inspector --tui -- D:/Projects/Practice/rune-kit/target/release/rune.exe run rune_fs -p allowed_dir=D:/Projects/Practice/rune-kit/test-dir
-
-
