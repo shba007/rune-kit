@@ -36,9 +36,12 @@ pub struct CmdExecResponse {
 }
 
 // Declarative host_fn! macro generates the callback for Extism
+// crates/rune-kit-core/src/runtime.rs -> inside host_cmd_exec host_fn!
+
 host_fn!(host_cmd_exec(input: String) -> String {
     let req: CmdExecRequest = serde_json::from_str(&input)
         .map_err(|e| ExtismError::msg(format!("Invalid command request payload: {}", e)))?;
+
 
     let mut cmd = Command::new(&req.program);
     cmd.args(&req.args);
@@ -51,6 +54,7 @@ host_fn!(host_cmd_exec(input: String) -> String {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
             let resp = CmdExecResponse {
                 success: output.status.success(),
                 exit_code: output.status.code(),
@@ -62,6 +66,7 @@ host_fn!(host_cmd_exec(input: String) -> String {
             Ok(json_str)
         }
         Err(e) => {
+            eprintln!("[DEBUG 2/3 - HOST] Process spawn error: {}", e);
             let resp = CmdExecResponse {
                 success: false,
                 exit_code: None,
