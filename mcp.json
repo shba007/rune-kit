@@ -1,79 +1,79 @@
 {
 	"mcpServers": {
 		"rune-email": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_email"],
+			"command": "rune",
+			"args": ["run", "rune-email"],
 			"env": {
 				"PATH": "",
 				"EMAIL_PRESET": "hostinger",
 				"EMAIL_USER": "contact@yourdomain.com",
 				"EMAIL_PASSWORD": "your_secure_password",
-				"OUTPUT_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir\\attachments"
+				"OUTPUT_DIR": "./test-dir/attachments"
 			}
 		},
 		"rune-fetch": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_fetch"]
+			"command": "rune",
+			"args": ["run", "rune-fetch"]
 		},
 		"rune-filesystem": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_filesystem"],
+			"command": "rune",
+			"args": ["run", "rune-filesystem"],
 			"env": {
-				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+				"ALLOWED_DIR": "./test-dir"
 			}
 		},
 		"rune-git": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_git"],
+			"command": "rune",
+			"args": ["run", "rune-git"],
 			"env": {
-				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+				"ALLOWED_DIR": "./test-dir"
 			}
 		},
 		"rune-image": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_image"],
+			"command": "rune",
+			"args": ["run", "rune-image"],
 			"env": {
-				"COOKIES_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir\\cookies",
-				"OUTPUT_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir\\images",
-				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+				"COOKIES_DIR": "./test-dir/cookies",
+				"OUTPUT_DIR": "./test-dir/images",
+				"ALLOWED_DIR": "./test-dir"
 			}
 		},
 		"rune-time": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_time"],
+			"command": "rune",
+			"args": ["run", "rune-time"],
 			"env": {
 				"DEFAULT_TIMEZONE": "Asia/Kolkata"
 			}
 		},
 		"rune-memory": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_memory"],
+			"command": "rune",
+			"args": ["run", "rune-memory"],
 			"env": {
-				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir",
+				"ALLOWED_DIR": "./test-dir",
 				"MEMORY_FILE": "graph_memory.json"
 			}
 		},
 		"rune-sequentialthinking": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_sequentialthinking"]
+			"command": "rune",
+			"args": ["run", "rune-sequentialthinking"]
 		},
 		"rune-print": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_print"],
+			"command": "rune",
+			"args": ["run", "rune-print"],
 			"env": {
 				"PRINTER_IP": "192.168.1.2",
 				"IPP_PATH": "/ipp/printer",
 				"USE_HTTPS": "true",
-				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+				"ALLOWED_DIR": "./test-dir"
 			}
 		},
 		"rune-video": {
-			"command": "D:\\Projects\\Practice\\rune-kit\\target\\release\\rune.exe",
-			"args": ["run", "rune_video"],
+			"command": "rune",
+			"args": ["run", "rune-video"],
 			"env": {
-				"COOKIES_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir\\cookies",
-				"OUTPUT_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir\\video",
-				"ALLOWED_DIR": "D:\\Projects\\Practice\\rune-kit\\test-dir"
+				"COOKIES_DIR": "./test-dir/cookies",
+				"OUTPUT_DIR": "./test-dir/video",
+				"ALLOWED_DIR": "./test-dir"
 			}
 		}
 	}

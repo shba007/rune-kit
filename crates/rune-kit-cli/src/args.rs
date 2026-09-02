@@ -1,4 +1,3 @@
-// crates/rune-kit-cli/src/args.rs
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -26,6 +25,9 @@ pub enum Commands {
         target: String,
         #[arg(short, long)]
         version: Option<String>,
+        /// Prefer a native binary sidecar build over WebAssembly when available
+        #[arg(long)]
+        native: bool,
     },
     /// Uninstall an installed tool
     Uninstall { name: String },

@@ -1,11 +1,10 @@
-// crates/rune-kit-core/src/protocol.rs
-use crate::runtime::WasmPluginInstance;
+use crate::runtime::PluginInstance;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
 pub struct McpRouter {
-    instances: HashMap<String, WasmPluginInstance>,
+    instances: HashMap<String, PluginInstance>,
 }
 
 impl McpRouter {
@@ -15,7 +14,7 @@ impl McpRouter {
         }
     }
 
-    pub fn register(&mut self, namespace: String, instance: WasmPluginInstance) {
+    pub fn register(&mut self, namespace: String, instance: PluginInstance) {
         self.instances.insert(namespace, instance);
     }
 
@@ -34,7 +33,6 @@ impl McpRouter {
         let id = req.get("id");
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
-        // Ignore client notifications (requests without an id) per JSON-RPC 2.0 spec
         if method.starts_with("notifications/") || method == "initialized" {
             return None;
         }

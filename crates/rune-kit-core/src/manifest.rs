@@ -1,6 +1,18 @@
-// crates/rune-kit-core/src/manifest.rs
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionKind {
+    Wasm,
+    Native,
+}
+
+impl Default for ExecutionKind {
+    fn default() -> Self {
+        ExecutionKind::Wasm
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginInfo {
@@ -23,6 +35,10 @@ pub struct InstalledPlugin {
     pub description: Option<String>,
     pub version: String,
     pub binary_path: String,
+    #[serde(default)]
+    pub native_binary_path: Option<String>,
+    #[serde(default)]
+    pub execution_kind: ExecutionKind,
     pub sha256: String,
     pub source: String,
     pub default_params: HashMap<String, String>,

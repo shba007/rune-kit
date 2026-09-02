@@ -13,3 +13,6 @@ reqwest.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
