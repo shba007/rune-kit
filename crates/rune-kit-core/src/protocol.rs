@@ -103,13 +103,27 @@ impl McpRouter {
                 let (ns, tool_name) = (parts[0], parts[1]);
                 if let Some(instance) = self.instances.get_mut(ns) {
                     match instance.call_tool(tool_name, arguments) {
-                        Ok(res) => Some(json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": {
-                                "content": [{ "type": "text", "text": res.to_string() }]
-                            }
-                        })),
+                        Ok(res) => {
+                            let content = if let Some(content_arr) =
+                                res.get("content").and_then(|c| c.as_array())
+                            {
+                                json!(content_arr)
+                            } else {
+                                json!([{ "type": "text", "text": res.to_string() }])
+                            };
+                            let is_error = res
+                                .get("isError")
+                                .and_then(|e| e.as_bool())
+                                .unwrap_or(false);
+                            Some(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                   "content": content,
+                                   "isError": is_error
+                                }
+                            }))
+                        }
                         Err(e) => Some(json!({
                             "jsonrpc": "2.0",
                             "id": id,

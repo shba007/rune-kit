@@ -1,3 +1,5 @@
+## Rune Kit - MCP Runtime
+
 cargo build --release
 
 cargo install --path crates/rune-kit-cli
