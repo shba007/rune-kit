@@ -37,7 +37,8 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: 🧹 Lint Code
-        run: cargo clippy --workspace --all-targets -- -D warnings || echo "Linting failed, but continuing"
+        run: cargo clippy --workspace --all-targets -- -D warnings || echo "Linting
+          failed, but continuing"
 
       - name: ⚙️ Build Workspace
         run: cargo build --workspace
@@ -54,7 +55,7 @@ jobs:
           commit_message: 'chore: apply code fixes [skip ci]'
 
       - name: 🛠️ Install cargo-edit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.87.4
         with:
           tool: cargo-edit
 

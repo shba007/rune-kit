@@ -4,11 +4,12 @@
 			"command": "rune",
 			"args": ["run", "rune-email"],
 			"env": {
-				"PATH": "",
 				"EMAIL_PRESET": "hostinger",
 				"EMAIL_USER": "contact@yourdomain.com",
 				"EMAIL_PASSWORD": "your_secure_password",
-				"OUTPUT_DIR": "./test-dir/attachments"
+				"EMAIL_DISPLAY_NAME": "Test User",
+				"OUTPUT_DIR": "./test-dir/attachments",
+				"ALLOWED_DIR": "./test-dir"
 			}
 		},
 		"rune-fetch": {

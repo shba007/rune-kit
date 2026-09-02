@@ -90,10 +90,11 @@ jobs:
       - name: 📝 Generate artifact attestation
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: 'rune-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_ext }}'
+          subject-path: 'rune-${{ env.VERSION }}-${{ matrix.target }}.${{
+            matrix.archive_ext }}'
 
       - name: ⬆️ Upload to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.VERSION }}
           files: rune-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_ext }}
