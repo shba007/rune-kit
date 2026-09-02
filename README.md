@@ -2,9 +2,9 @@
 
 cargo build --release
 
-cargo install --path crates/rune-kit-cli
+cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/rune_<name>.wasm
 
-cargo run --bin rune -- install ../rune-tools/target/wasm32-wasip1/release/rune_filesystem.wasm
+<!-- cargo install --path crates/rune-kit-cli -->
 
 ## Test Prompt
 
