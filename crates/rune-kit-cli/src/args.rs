@@ -33,8 +33,37 @@ pub enum Commands {
     Uninstall { name: String },
     /// List installed tools
     List,
-    /// Update installed tools
-    Update { name: Option<String> },
+    /// List all available tools in the remote registry
+    Available,
+    /// Search tools in the registry by keyword across names and descriptions
+    Search {
+        /// Search keyword to match against plugin name or description
+        keyword: String,
+    },
+    /// Update installed tools from the registry or inspect update availability
+    #[command(alias = "outdated")]
+    Update {
+        /// Specific plugins to update or inspect (updates all if omitted)
+        names: Vec<String>,
+        /// Check for available updates without downloading
+        #[arg(short, long)]
+        check: bool,
+        /// Prefer native binary sidecar builds over WebAssembly
+        #[arg(long)]
+        native: bool,
+    },
+    /// Self-update the rune CLI binary to the latest release
+    SelfUpdate {
+        /// Check if an update is available without downloading
+        #[arg(short, long)]
+        check: bool,
+        /// Specific release version to target (e.g. 0.1.4)
+        #[arg(short, long)]
+        version: Option<String>,
+        /// Reinstall even if the binary is already up to date
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {

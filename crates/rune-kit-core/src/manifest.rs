@@ -51,3 +51,22 @@ pub struct ToolDefinition {
     #[serde(rename = "inputSchema", alias = "input_schema")]
     pub input_schema: serde_json::Value,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryPluginSummary {
+    pub name: String,
+    pub latest: String,
+    pub description: Option<String>,
+    pub has_wasm: bool,
+    pub has_native: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginUpdateStatus {
+    pub name: String,
+    pub installed_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub has_wasm: bool,
+    pub has_native: bool,
+}

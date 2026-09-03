@@ -1,4 +1,6 @@
-use crate::manifest::{ExecutionKind, InstalledPlugin, Lockfile};
+use crate::manifest::{
+    ExecutionKind, InstalledPlugin, Lockfile, PluginUpdateStatus, RegistryPluginSummary,
+};
 use crate::runtime::{NativeSidecar, WasmPluginInstance};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -20,6 +22,8 @@ pub enum PackageError {
     InvalidSpec(String),
     #[error("Runtime initialization probe failed: {0}")]
     Runtime(#[from] crate::runtime::RuntimeError),
+    #[error("Self-update error: {0}")]
+    SelfUpdate(String),
 }
 
 pub struct FetchedBundle {
@@ -73,6 +77,198 @@ impl PackageManager {
             .plugins
             .get(name)
             .map(|p| self.base_dir.join(&p.binary_path))
+    }
+
+    pub async fn fetch_registry(&self) -> Result<Vec<RegistryPluginSummary>, PackageError> {
+        let registry_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json";
+        let client = reqwest::Client::builder().user_agent("rune-kit").build()?;
+        let index: serde_json::Value = client.get(registry_url).send().await?.json().await?;
+
+        let mut results = Vec::new();
+        if let Some(map) = index.as_object() {
+            for (name, pkg) in map {
+                let latest = pkg
+                    .get("latest")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0.1.0")
+                    .to_string();
+
+                let description = pkg
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+
+                let mut has_wasm = false;
+                let mut has_native = false;
+
+                if let Some(ver_obj) = pkg.get("versions").and_then(|v| v.get(&latest)) {
+                    has_wasm = ver_obj.get("url").and_then(|u| u.as_str()).is_some();
+                    has_native = ver_obj.get("native").is_some();
+                }
+
+                results.push(RegistryPluginSummary {
+                    name: name.clone(),
+                    latest,
+                    description,
+                    has_wasm,
+                    has_native,
+                });
+            }
+        }
+        results.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(results)
+    }
+
+    pub async fn check_plugin_updates(
+        &self,
+        names: Option<&[String]>,
+    ) -> Result<Vec<PluginUpdateStatus>, PackageError> {
+        let lockfile = self.load_lockfile();
+        let registry = self.fetch_registry().await?;
+        let registry_map: HashMap<String, RegistryPluginSummary> =
+            registry.into_iter().map(|p| (p.name.clone(), p)).collect();
+
+        let mut statuses = Vec::new();
+        for (name, installed) in &lockfile.plugins {
+            if let Some(filter) = names {
+                if !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                    continue;
+                }
+            }
+
+            if let Some(reg_entry) = registry_map.get(name) {
+                let has_update = is_newer_version(&reg_entry.latest, &installed.version);
+                statuses.push(PluginUpdateStatus {
+                    name: name.clone(),
+                    installed_version: installed.version.clone(),
+                    latest_version: reg_entry.latest.clone(),
+                    has_update,
+                    has_wasm: reg_entry.has_wasm,
+                    has_native: reg_entry.has_native,
+                });
+            }
+        }
+
+        statuses.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(statuses)
+    }
+
+    pub async fn fetch_latest_cli_release(
+        &self,
+        requested_version: Option<&str>,
+    ) -> Result<(String, String), PackageError> {
+        let client = reqwest::Client::builder().user_agent("rune-kit").build()?;
+
+        let url = match requested_version {
+            Some(ver) => {
+                let tag = if ver.starts_with('v') {
+                    ver.to_string()
+                } else {
+                    format!("v{}", ver)
+                };
+                format!(
+                    "https://api.github.com/repos/shba007/rune-kit/releases/tags/{}",
+                    tag
+                )
+            }
+            None => "https://api.github.com/repos/shba007/rune-kit/releases/latest".to_string(),
+        };
+
+        let resp = client.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(PackageError::SelfUpdate(format!(
+                "GitHub release lookup failed with status: {}",
+                resp.status()
+            )));
+        }
+
+        let release: serde_json::Value = resp.json().await?;
+        let tag_name = release
+            .get("tag_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| PackageError::SelfUpdate("Release missing tag_name".to_string()))?
+            .to_string();
+
+        let triple = current_target_triple();
+        let assets = release
+            .get("assets")
+            .and_then(|a| a.as_array())
+            .ok_or_else(|| PackageError::SelfUpdate("Release missing assets".to_string()))?;
+
+        let asset = assets
+            .iter()
+            .find(|a| {
+                let name = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                name.contains(triple) && (name.ends_with(".tar.gz") || name.ends_with(".zip"))
+            })
+            .ok_or_else(|| {
+                PackageError::SelfUpdate(format!(
+                    "No compatible binary found for target '{}' in release '{}'",
+                    triple, tag_name
+                ))
+            })?;
+
+        let download_url = asset
+            .get("browser_download_url")
+            .and_then(|u| u.as_str())
+            .ok_or_else(|| PackageError::SelfUpdate("Asset missing download URL".to_string()))?
+            .to_string();
+
+        Ok((tag_name, download_url))
+    }
+
+    pub async fn self_update(
+        &self,
+        requested_version: Option<&str>,
+        force: bool,
+    ) -> Result<String, PackageError> {
+        let current_ver = env!("CARGO_PKG_VERSION");
+        let (tag, download_url) = self.fetch_latest_cli_release(requested_version).await?;
+        let target_ver = tag.strip_prefix('v').unwrap_or(&tag);
+
+        if !force && !is_newer_version(target_ver, current_ver) && target_ver == current_ver {
+            return Err(PackageError::SelfUpdate(format!(
+                "Already on the latest version (v{}). Use --force to overwrite.",
+                current_ver
+            )));
+        }
+
+        let client = reqwest::Client::builder().user_agent("rune-kit").build()?;
+        let archive_bytes = client
+            .get(&download_url)
+            .send()
+            .await?
+            .bytes()
+            .await?
+            .to_vec();
+
+        let current_exe = std::env::current_exe()?;
+        let exe_dir = current_exe.parent().ok_or_else(|| {
+            PackageError::SelfUpdate("Could not determine current executable directory".to_string())
+        })?;
+
+        let binary_bytes = extract_single_binary(&archive_bytes, "rune")?;
+        let temp_bin = exe_dir.join(format!(".rune-update-{}.tmp", chrono_timestamp()));
+        std::fs::write(&temp_bin, &binary_bytes)?;
+        set_executable_permissions(&temp_bin)?;
+
+        #[cfg(windows)]
+        {
+            let old_backup = exe_dir.join(format!(".rune-old-{}.tmp", chrono_timestamp()));
+            std::fs::rename(&current_exe, &old_backup)?;
+            if let Err(e) = std::fs::rename(&temp_bin, &current_exe) {
+                let _ = std::fs::rename(&old_backup, &current_exe);
+                return Err(PackageError::Io(e));
+            }
+            let _ = std::fs::remove_file(&old_backup);
+        }
+
+        #[cfg(not(windows))]
+        {
+            std::fs::rename(&temp_bin, &current_exe)?;
+        }
+
+        Ok(tag)
     }
 
     pub async fn install(
@@ -151,7 +347,6 @@ impl PackageManager {
         let plugins_dir = self.base_dir.join("plugins");
         std::fs::create_dir_all(&plugins_dir)?;
 
-        // 1. Probe metadata (prefer WASM probe; fallback to native probe)
         let mut probe_params = HashMap::new();
         probe_params.insert("allowed_hosts".to_string(), String::new());
 
@@ -185,7 +380,6 @@ impl PackageManager {
         sanitize_path_component(&final_name, "plugin name")?;
         sanitize_path_component(&final_ver, "plugin version")?;
 
-        // 2. Save WASM binary if downloaded
         let mut wasm_rel_path = None;
         let mut sha256_hash = String::new();
 
@@ -201,7 +395,6 @@ impl PackageManager {
             wasm_rel_path = Some(format!("plugins/{}", file_name));
         }
 
-        // 3. Extract & save Native binary if downloaded
         let mut native_rel_path = None;
 
         if let Some(ref native_bytes) = bundle.native_bytes {
@@ -220,7 +413,6 @@ impl PackageManager {
                 extract_archive_or_binary(native_bytes, &temp_extract_dir, &final_name)?;
             set_executable_permissions(&extracted_binary)?;
 
-            // If metadata probe hadn't run via wasm, probe via native binary
             if final_desc.is_none() {
                 if let Ok(mut sidecar) =
                     NativeSidecar::new(&final_name, &extracted_binary, probe_params)
@@ -428,6 +620,49 @@ fn is_native_archive_or_binary(target: &str) -> bool {
         || (!target.ends_with(".wasm") && Path::new(target).is_file())
 }
 
+fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, PackageError> {
+    use std::io::Read;
+    if bytes.starts_with(b"PK\x03\x04") {
+        let reader = Cursor::new(bytes);
+        let mut zip = zip::ZipArchive::new(reader)
+            .map_err(|e| PackageError::InvalidSpec(format!("Zip read error: {}", e)))?;
+        for i in 0..zip.len() {
+            let mut file = zip
+                .by_index(i)
+                .map_err(|e| PackageError::InvalidSpec(format!("Zip entry error: {}", e)))?;
+            let fname = file.name().to_string();
+            if fname == binary_name
+                || fname == format!("{}.exe", binary_name)
+                || fname.ends_with(&format!("/{}", binary_name))
+            {
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                return Ok(buf);
+            }
+        }
+    } else if bytes.starts_with(b"\x1f\x8b") {
+        let gz = GzDecoder::new(bytes);
+        let mut archive = Archive::new(gz);
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if fname == binary_name || fname == format!("{}.exe", binary_name) {
+                let mut buf = Vec::new();
+                entry.read_to_end(&mut buf)?;
+                return Ok(buf);
+            }
+        }
+    } else {
+        return Ok(bytes.to_vec());
+    }
+
+    Err(PackageError::SelfUpdate(format!(
+        "Binary '{}' not found inside downloaded archive",
+        binary_name
+    )))
+}
+
 fn extract_archive_or_binary(
     bytes: &[u8],
     dest_dir: &Path,
@@ -573,4 +808,26 @@ fn sanitize_path_component(value: &str, label: &str) -> Result<(), PackageError>
         )));
     }
     Ok(())
+}
+
+pub fn is_newer_version(candidate: &str, current: &str) -> bool {
+    let parse = |v: &str| -> (u64, u64, u64) {
+        let trimmed = v.trim().strip_prefix('v').unwrap_or(v.trim());
+        let mut parts = trimmed.split('.');
+        let major = parts
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let minor = parts
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let patch = parts
+            .next()
+            .and_then(|s| s.split('-').next())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        (major, minor, patch)
+    };
+    parse(candidate) > parse(current)
 }
