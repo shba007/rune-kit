@@ -24,4 +24,3 @@ rustc-ice-*.txt
 #.idea/
 
 test-dir
-mcp*.json
