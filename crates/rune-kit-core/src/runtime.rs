@@ -1,4 +1,4 @@
-use crate::manifest::{PluginInfo, ToolDefinition};
+use crate::manifest::{PluginInfo, PromptDefinition, ResourceDefinition, ToolDefinition};
 use extism::{Error as ExtismError, Manifest, PTR, Plugin, PluginBuilder, UserData, Wasm, host_fn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -194,6 +194,39 @@ impl WasmPluginInstance {
 
         let parsed: Value = serde_json::from_str(&raw)?;
         Ok(parsed)
+    }
+
+    pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
+        let raw = self
+            .plugin
+            .call::<(), String>("mcp_list_resources", ())
+            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
+        let raw = self
+            .plugin
+            .call::<&str, String>("mcp_read_resource", uri)
+            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
+        let raw = self
+            .plugin
+            .call::<(), String>("mcp_list_prompts", ())
+            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
+        let payload = json!({ "name": name, "arguments": arguments }).to_string();
+        let raw = self
+            .plugin
+            .call::<&str, String>("mcp_get_prompt", &payload)
+            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
+        Ok(serde_json::from_str(&raw)?)
     }
 }
 
@@ -401,6 +434,59 @@ impl NativeSidecar {
 
         Ok(res.clone())
     }
+
+    pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
+        let resp = self.send_request("resources/list", json!({}))?;
+        if let Some(err) = resp.get("error") {
+            return Err(RuntimeError::Execution(format!(
+                "Sidecar resources/list error: {}",
+                err
+            )));
+        }
+        let res = resp.get("result").unwrap_or(&resp);
+        let resources_val = res.get("resources").unwrap_or(res);
+        Ok(serde_json::from_value(resources_val.clone())?)
+    }
+
+    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
+        let resp = self.send_request("resources/read", json!({ "uri": uri }))?;
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown sidecar resource error");
+            return Err(RuntimeError::Execution(msg.to_string()));
+        }
+        Ok(resp.get("result").unwrap_or(&resp).clone())
+    }
+
+    pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
+        let resp = self.send_request("prompts/list", json!({}))?;
+        if let Some(err) = resp.get("error") {
+            return Err(RuntimeError::Execution(format!(
+                "Sidecar prompts/list error: {}",
+                err
+            )));
+        }
+        let res = resp.get("result").unwrap_or(&resp);
+        let prompts_val = res.get("prompts").unwrap_or(res);
+        Ok(serde_json::from_value(prompts_val.clone())?)
+    }
+
+    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
+        let resp = self.send_request(
+            "prompts/get",
+            json!({ "name": name, "arguments": arguments }),
+        )?;
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown sidecar prompt error");
+            return Err(RuntimeError::Execution(msg.to_string()));
+        }
+        Ok(resp.get("result").unwrap_or(&resp).clone())
+    }
 }
 
 impl Drop for NativeSidecar {
@@ -452,6 +538,34 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.call_tool(name, arguments),
             PluginInstance::Native(n) => n.call_tool(name, arguments),
+        }
+    }
+
+    pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
+        match self {
+            PluginInstance::Wasm(w) => w.list_resources(),
+            PluginInstance::Native(n) => n.list_resources(),
+        }
+    }
+
+    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
+        match self {
+            PluginInstance::Wasm(w) => w.read_resource(uri),
+            PluginInstance::Native(n) => n.read_resource(uri),
+        }
+    }
+
+    pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
+        match self {
+            PluginInstance::Wasm(w) => w.list_prompts(),
+            PluginInstance::Native(n) => n.list_prompts(),
+        }
+    }
+
+    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
+        match self {
+            PluginInstance::Wasm(w) => w.get_prompt(name, arguments),
+            PluginInstance::Native(n) => n.get_prompt(name, arguments),
         }
     }
 }

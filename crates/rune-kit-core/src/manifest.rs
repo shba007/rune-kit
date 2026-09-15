@@ -53,6 +53,31 @@ pub struct ToolDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceDefinition {
+    pub uri: String, // plugin-local, unqualified — rune-kit prefixes with rune://<namespace>/
+    pub name: String,
+    pub description: String,
+    #[serde(rename = "mimeType", alias = "mime_type", default)]
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptArgument {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptDefinition {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub arguments: Vec<PromptArgument>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryPluginSummary {
     pub name: String,
     pub latest: String,

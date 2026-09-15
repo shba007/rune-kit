@@ -4,8 +4,8 @@ pub mod protocol;
 pub mod runtime;
 
 pub use manifest::{
-    ExecutionKind, InstalledPlugin, Lockfile, PluginUpdateStatus, RegistryPluginSummary,
-    ToolDefinition,
+    ExecutionKind, InstalledPlugin, Lockfile, PluginUpdateStatus, PromptArgument,
+    PromptDefinition, RegistryPluginSummary, ResourceDefinition, ToolDefinition,
 };
 pub use package::{PackageError, PackageManager, is_newer_version};
 pub use protocol::McpRouter;
