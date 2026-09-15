@@ -1,7 +1,10 @@
 mod args;
 
+mod output;
+
 use args::{Cli, Commands};
 use clap::Parser;
+use output::{Column, Table};
 use rune_kit_core::{
     ExecutionKind, Lockfile, McpRouter, PackageManager, PluginInstance, PluginUpdateStatus,
     RegistryPluginSummary, is_newer_version,
@@ -47,20 +50,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             println!(
-                "{:<14} {:<10} {:<8} {:<34} {}",
-                "NAME", "VERSION", "KIND", "DESCRIPTION", "SOURCE"
+                "{:<14} {:<10} {:<12} {:<34} {}",
+                "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE"
             );
             println!("{}", "-".repeat(84));
             for (name, p) in &lockfile.plugins {
                 let desc = p.description.as_deref().unwrap_or("-");
                 let short_desc = truncate_display(desc, 32);
-                let kind_label = match p.execution_kind {
-                    ExecutionKind::Wasm => "wasm",
-                    ExecutionKind::Native => "native",
+                let builds = match (p.binary_path.ends_with(".wasm"), p.native_binary_path.is_some()) {
+                    (true, true) => "wasm, native",
+                    (true, false) => "wasm",
+                    (false, true) => "native",
+                    (false, false) => "-",
                 };
                 println!(
                     "{:<14} {:<10} {:<8} {:<34} {}",
-                    name, p.version, kind_label, short_desc, p.source
+                    name, p.version, builds, short_desc, p.source
                 );
             }
         }
@@ -248,8 +253,8 @@ fn truncate_display(s: &str, max_chars: usize) -> String {
 
 fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile) {
     println!(
-        "{:<16} {:<10} {:<14} {:<12} {}",
-        "NAME", "LATEST", "BUILDS", "STATUS", "DESCRIPTION"
+        "{:<20} {:<10} {:<10} {:<14} {}",
+        "NAME", "CURRENT", "LATEST", "BUILDS", "DESCRIPTION"
     );
     println!("{}", "-".repeat(88));
     for p in plugins {
@@ -259,16 +264,16 @@ fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile)
             (false, true) => "native",
             (false, false) => "-",
         };
-        let status = if lockfile.plugins.contains_key(&p.name) {
-            "installed"
-        } else {
-            "-"
-        };
+        let current = lockfile
+            .plugins
+            .get(&p.name)
+            .map(|e| e.version.as_str())
+            .unwrap_or("-");
         let desc = p.description.as_deref().unwrap_or("-");
         let short_desc = truncate_display(desc, 40);
         println!(
-            "{:<16} {:<10} {:<14} {:<12} {}",
-            p.name, p.latest, builds, status, short_desc
+            "{:<20} {:<10} {:<10} {:<14} {}",
+            p.name, current, p.latest, builds, short_desc
         );
     }
 }
@@ -276,7 +281,7 @@ fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile)
 fn render_update_status_table(statuses: &[PluginUpdateStatus]) {
     println!(
         "{:<16} {:<12} {:<12} {:<14} {}",
-        "PLUGIN", "INSTALLED", "LATEST", "STATUS", "BUILDS"
+        "PLUGIN", "CURRENT", "LATEST", "STATUS", "BUILDS"
     );
     println!("{}", "-".repeat(70));
     for s in statuses {
