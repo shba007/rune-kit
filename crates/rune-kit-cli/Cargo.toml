@@ -7,6 +7,10 @@ edition.workspace = true
 name = "rune"
 path = "src/main.rs"
 
+[lib]
+name = "rune_kit_cli"
+path = "src/lib.rs"
+
 [dependencies]
 rune-kit-core = { path = "../rune-kit-core" }
 tokio.workspace = true

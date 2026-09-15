@@ -1,3 +1,5 @@
+use rune_kit_core::{Lockfile, PluginUpdateStatus, RegistryPluginSummary};
+
 pub struct Column {
     pub name: &'static str,
     pub width: usize,
@@ -42,7 +44,7 @@ impl Table {
 }
 
 impl Table {
-    fn format_rows(&self) -> Vec<String> {
+    pub fn format_rows(&self) -> Vec<String> {
         let sep = " ";
         let fixed_total: usize = self
             .columns
@@ -135,4 +137,100 @@ mod tests {
         assert_eq!(&row[flex_start..flex_start + 11], "DESCRIPTION");
         assert!(row[flex_start + 11..flex_start + 44].chars().all(|c| c == ' '));
     }
+}
+
+fn truncate_display(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
+    truncated.push_str("...");
+    truncated
+}
+
+pub fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile) -> Table {
+    let mut t = Table::new(88)
+        .column(Column::fixed("NAME", 20))
+        .column(Column::fixed("CURRENT", 10))
+        .column(Column::fixed("LATEST", 10))
+        .column(Column::fixed("BUILDS", 14))
+        .column(Column::flexible("DESCRIPTION", 30));
+    for p in plugins {
+        let builds = match (p.has_wasm, p.has_native) {
+            (true, true) => "wasm, native",
+            (true, false) => "wasm",
+            (false, true) => "native",
+            (false, false) => "-",
+        };
+        let current = lockfile
+            .plugins
+            .get(&p.name)
+            .map(|e| e.version.as_str())
+            .unwrap_or("-");
+        t.add_row(vec![
+            p.name.clone(),
+            current.to_string(),
+            p.latest.clone(),
+            builds.to_string(),
+            p.description.clone().unwrap_or_else(|| "-".to_string()),
+        ]);
+    }
+    t
+}
+
+pub fn render_update_status_table(statuses: &[PluginUpdateStatus]) -> Table {
+    let mut t = Table::new(70)
+        .column(Column::fixed("PLUGIN", 16))
+        .column(Column::fixed("CURRENT", 12))
+        .column(Column::fixed("LATEST", 12))
+        .column(Column::fixed("STATUS", 14))
+        .column(Column::flexible("BUILDS", 12));
+    for s in statuses {
+        let status = if s.has_update {
+            "Updateable"
+        } else {
+            "Up-to-date"
+        };
+        let builds = match (s.has_wasm, s.has_native) {
+            (true, true) => "wasm, native",
+            (true, false) => "wasm",
+            (false, true) => "native",
+            (false, false) => "-",
+        };
+        t.add_row(vec![
+            s.name.clone(),
+            s.installed_version.clone(),
+            s.latest_version.clone(),
+            status.to_string(),
+            builds.to_string(),
+        ]);
+    }
+    t
+}
+
+pub fn render_list_table(lockfile: &Lockfile) -> Table {
+    let mut t = Table::new(84)
+        .column(Column::fixed("NAME", 14))
+        .column(Column::fixed("VERSION", 10))
+        .column(Column::fixed("BUILDS", 8))
+        .column(Column::fixed("DESCRIPTION", 34))
+        .column(Column::flexible("SOURCE", 14));
+    for (name, p) in &lockfile.plugins {
+        let builds = match (p.binary_path.ends_with(".wasm"), p.native_binary_path.is_some()) {
+            (true, true) => "wasm, native",
+            (true, false) => "wasm",
+            (false, true) => "native",
+            (false, false) => "-",
+        };
+        let desc = p.description.clone().unwrap_or_else(|| "-".to_string());
+        let short_desc = truncate_display(&desc, 32);
+        t.add_row(vec![
+            name.to_string(),
+            p.version.clone(),
+            builds.to_string(),
+            short_desc,
+            p.source.clone(),
+        ]);
+    }
+    t
 }
