@@ -49,25 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 return Ok(());
             }
-            println!(
-                "{:<14} {:<10} {:<12} {:<34} {}",
-                "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE"
-            );
-            println!("{}", "-".repeat(84));
-            for (name, p) in &lockfile.plugins {
-                let desc = p.description.as_deref().unwrap_or("-");
-                let short_desc = truncate_display(desc, 32);
-                let builds = match (p.binary_path.ends_with(".wasm"), p.native_binary_path.is_some()) {
-                    (true, true) => "wasm, native",
-                    (true, false) => "wasm",
-                    (false, true) => "native",
-                    (false, false) => "-",
-                };
-                println!(
-                    "{:<14} {:<10} {:<8} {:<34} {}",
-                    name, p.version, builds, short_desc, p.source
-                );
-            }
+            render_list_table(&lockfile).render();
         }
         Commands::Available => {
             let lockfile = pm.load_lockfile();
@@ -76,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("No plugins found in the registry.");
                 return Ok(());
             }
-            render_registry_table(&available, &lockfile);
+            render_registry_table(&available, &lockfile).render();
         }
         Commands::Search { keyword } => {
             let lockfile = pm.load_lockfile();
@@ -98,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("No plugins found matching '{}'", keyword);
                 return Ok(());
             }
-            render_registry_table(&matches, &lockfile);
+            render_registry_table(&matches, &lockfile).render();
         }
         Commands::Update {
             names,
@@ -118,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if check {
-                render_update_status_table(&statuses);
+                render_update_status_table(&statuses).render();
                 return Ok(());
             }
 
@@ -251,12 +233,13 @@ fn truncate_display(s: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile) {
-    println!(
-        "{:<20} {:<10} {:<10} {:<14} {}",
-        "NAME", "CURRENT", "LATEST", "BUILDS", "DESCRIPTION"
-    );
-    println!("{}", "-".repeat(88));
+fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile) -> Table {
+    let mut t = Table::new(88)
+        .column(Column::fixed("NAME", 20))
+        .column(Column::fixed("CURRENT", 10))
+        .column(Column::fixed("LATEST", 10))
+        .column(Column::fixed("BUILDS", 14))
+        .column(Column::flexible("DESCRIPTION", 30));
     for p in plugins {
         let builds = match (p.has_wasm, p.has_native) {
             (true, true) => "wasm, native",
@@ -269,21 +252,24 @@ fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile)
             .get(&p.name)
             .map(|e| e.version.as_str())
             .unwrap_or("-");
-        let desc = p.description.as_deref().unwrap_or("-");
-        let short_desc = truncate_display(desc, 40);
-        println!(
-            "{:<20} {:<10} {:<10} {:<14} {}",
-            p.name, current, p.latest, builds, short_desc
-        );
+        t.add_row(vec![
+            p.name.clone(),
+            current.to_string(),
+            p.latest.clone(),
+            builds.to_string(),
+            p.description.clone().unwrap_or_else(|| "-".to_string()),
+        ]);
     }
+    t
 }
 
-fn render_update_status_table(statuses: &[PluginUpdateStatus]) {
-    println!(
-        "{:<16} {:<12} {:<12} {:<14} {}",
-        "PLUGIN", "CURRENT", "LATEST", "STATUS", "BUILDS"
-    );
-    println!("{}", "-".repeat(70));
+fn render_update_status_table(statuses: &[PluginUpdateStatus]) -> Table {
+    let mut t = Table::new(70)
+        .column(Column::fixed("PLUGIN", 16))
+        .column(Column::fixed("CURRENT", 12))
+        .column(Column::fixed("LATEST", 12))
+        .column(Column::fixed("STATUS", 14))
+        .column(Column::flexible("BUILDS", 12));
     for s in statuses {
         let status = if s.has_update {
             "Updateable"
@@ -296,11 +282,15 @@ fn render_update_status_table(statuses: &[PluginUpdateStatus]) {
             (false, true) => "native",
             (false, false) => "-",
         };
-        println!(
-            "{:<16} {:<12} {:<12} {:<14} {}",
-            s.name, s.installed_version, s.latest_version, status, builds
-        );
+        t.add_row(vec![
+            s.name.clone(),
+            s.installed_version.clone(),
+            s.latest_version.clone(),
+            status.to_string(),
+            builds.to_string(),
+        ]);
     }
+    t
 }
 
 fn resolve_host_env_params() -> HashMap<String, String> {
@@ -309,4 +299,83 @@ fn resolve_host_env_params() -> HashMap<String, String> {
         map.insert(k.to_ascii_lowercase(), v);
     }
     map
+}
+
+fn render_list_table(lockfile: &Lockfile) -> Table {
+    let mut t = Table::new(84)
+        .column(Column::fixed("NAME", 14))
+        .column(Column::fixed("VERSION", 10))
+        .column(Column::fixed("BUILDS", 8))
+        .column(Column::fixed("DESCRIPTION", 34))
+        .column(Column::flexible("SOURCE", 14));
+    for (name, p) in &lockfile.plugins {
+        let builds = match (p.binary_path.ends_with(".wasm"), p.native_binary_path.is_some()) {
+            (true, true) => "wasm, native",
+            (true, false) => "wasm",
+            (false, true) => "native",
+            (false, false) => "-",
+        };
+        let desc = p.description.clone().unwrap_or_else(|| "-".to_string());
+        let short_desc = truncate_display(&desc, 32);
+        t.add_row(vec![
+            name.to_string(),
+            p.version.clone(),
+            builds.to_string(),
+            short_desc,
+            p.source.clone(),
+        ]);
+    }
+    t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample_lockfile() -> Lockfile {
+        let mut plugins = HashMap::new();
+        plugins.insert(
+            "alpha".to_string(),
+            InstalledPlugin {
+                name: "alpha".to_string(),
+                description: Some("A sample plugin".to_string()),
+                version: "1.2.3".to_string(),
+                binary_path: "alpha.wasm".to_string(),
+                native_binary_path: Some("alpha-bin".to_string()),
+                execution_kind: ExecutionKind::Wasm,
+                sha256: "abc".to_string(),
+                source: "file:///alpha.wasm".to_string(),
+                default_params: HashMap::new(),
+            },
+        );
+        Lockfile { version: 1, plugins }
+    }
+
+    #[test]
+    fn registry_table_header_matches_layout() {
+        let rows = render_registry_table(&[], &sample_lockfile()).format_rows();
+        assert_eq!(
+            rows[0],
+            format!("{:<20} {:<10} {:<10} {:<14} {:<30}", "NAME", "CURRENT", "LATEST", "BUILDS", "DESCRIPTION")
+        );
+    }
+
+    #[test]
+    fn update_table_header_matches_layout() {
+        let rows = render_update_status_table(&[]).format_rows();
+        assert_eq!(
+            rows[0],
+            format!("{:<16} {:<12} {:<12} {:<14} {:<12}", "PLUGIN", "CURRENT", "LATEST", "STATUS", "BUILDS")
+        );
+    }
+
+    #[test]
+    fn list_table_header_matches_layout() {
+        let rows = render_list_table(&sample_lockfile()).format_rows();
+        assert_eq!(
+            rows[0],
+            format!("{:<14} {:<10} {:<8} {:<34} {:<14}", "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE")
+        );
+    }
 }
