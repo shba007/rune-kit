@@ -86,6 +86,50 @@ pub struct RegistryPluginSummary {
     pub has_native: bool,
 }
 
+// A registry entry for a skill — a standalone published content artifact,
+// kept separate from the MCP plugin registry (its own `SkillLockfile`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrySkillSummary {
+    pub name: String,
+    pub latest: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+// A skill's on-disk lockfile entry: installed content (SKILL.md + files),
+// not executable code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledSkill {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub version: String,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub files: Vec<SkillFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillFile {
+    pub path: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+// A skill lockfile, separate from `Lockfile` — skills and plugins stay separate.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SkillLockfile {
+    pub version: u32,
+    #[serde(default)]
+    pub skills: HashMap<String, InstalledSkill>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginUpdateStatus {
     pub name: String,

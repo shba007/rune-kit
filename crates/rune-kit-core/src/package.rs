@@ -1,5 +1,6 @@
 use crate::manifest::{
-    ExecutionKind, InstalledPlugin, Lockfile, PluginUpdateStatus, RegistryPluginSummary,
+    ExecutionKind, InstalledPlugin, InstalledSkill, Lockfile, PluginUpdateStatus,
+    RegistryPluginSummary, RegistrySkillSummary, SkillFile, SkillLockfile,
 };
 use crate::runtime::{NativeSidecar, WasmPluginInstance};
 use flate2::read::GzDecoder;
@@ -572,6 +573,329 @@ impl PackageManager {
             source: "registry".to_string(),
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Skill management — skills are standalone content artifacts, kept separate
+// from the MCP plugin registry (their own directory and lockfile).
+// ---------------------------------------------------------------------------
+
+pub struct SkillManager {
+    base_dir: PathBuf,
+    lockfile_path: PathBuf,
+}
+
+impl SkillManager {
+    pub fn new() -> Self {
+        let base_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rune-kit");
+
+        let _ = std::fs::create_dir_all(base_dir.join("skills"));
+        let lockfile_path = base_dir.join("installed_skills.json");
+
+        Self { base_dir, lockfile_path }
+    }
+
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    pub fn load_skills_lockfile(&self) -> SkillLockfile {
+        if let Ok(data) = std::fs::read_to_string(&self.lockfile_path) {
+            serde_json::from_str(&data).unwrap_or_default()
+        } else {
+            SkillLockfile::default()
+        }
+    }
+
+    pub fn save_skills_lockfile(&self, lockfile: &SkillLockfile) -> Result<(), std::io::Error> {
+        let content = serde_json::to_string_pretty(lockfile)?;
+        std::fs::write(&self.lockfile_path, content)
+    }
+
+    pub async fn fetch_skills(
+        &self,
+    ) -> Result<Vec<RegistrySkillSummary>, PackageError> {
+        let skills_url =
+            "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/skills/index.json";
+        let client = reqwest::Client::new();
+        let index: serde_json::Value = client.get(skills_url).send().await?.json().await?;
+
+        let mut results = Vec::new();
+        if let Some(map) = index.as_object() {
+            for (name, skill) in map {
+                let latest = skill
+                    .get("latest")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0.1.0")
+                    .to_string();
+                let description = skill
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let author = skill
+                    .get("author")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let tags = skill
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| t.as_str().map(ToString::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                results.push(RegistrySkillSummary {
+                    name: name.clone(),
+                    latest,
+                    description,
+                    author,
+                    tags,
+                });
+            }
+        }
+        results.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(results)
+    }
+
+    async fn fetch_skill_entry(
+        &self,
+        name: &str,
+    ) -> Result<serde_json::Value, PackageError> {
+        let skills_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/skills/index.json";
+        let client = reqwest::Client::new();
+        let index: serde_json::Value = client.get(skills_url).send().await?.json().await?;
+        index
+            .get(name)
+            .cloned()
+            .ok_or_else(|| PackageError::NotFound(name.to_string()))
+    }
+
+    async fn resolve_skill_artifact(
+        &self,
+        target: &str,
+        version: Option<&str>,
+    ) -> Result<
+        (String, Vec<u8>, String, Option<String>, Option<String>, Option<String>),
+        PackageError,
+    > {
+        let (name, bytes, source, description, author, resolved_version) =
+            if target.starts_with("http://") || target.starts_with("https://") {
+                let url = target.to_string();
+                let name = url
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("skill")
+                    .replace(".tar.gz", "")
+                    .replace(".zip", "");
+                let bytes = reqwest::get(&url).await?.bytes().await?.to_vec();
+                (name, bytes, url, None, None, None)
+            } else if Path::new(target).exists() {
+                let path = Path::new(target);
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("skill")
+                    .to_string();
+                let bytes = std::fs::read(path)?;
+                (name, bytes, target.to_string(), None, None, None)
+            } else {
+                let entry = self.fetch_skill_entry(target).await?;
+                let ver = version
+                    .unwrap_or_else(|| entry["latest"].as_str().unwrap_or("0.1.0"));
+                let url = entry
+                    .get("versions")
+                    .and_then(|v| v.get(&ver))
+                    .and_then(|vo| vo.get("url"))
+                    .and_then(|u| u.as_str())
+                    .ok_or_else(|| {
+                        PackageError::NotFound(format!("No artifact for skill '{}' (v{})", target, ver))
+                    })?;
+                let description = entry
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let author = entry
+                    .get("author")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let bytes = reqwest::get(url).await?.bytes().await?.to_vec();
+                (
+                    target.to_string(),
+                    bytes,
+                    "registry".to_string(),
+                    description,
+                    author,
+                    Some(ver.to_string()),
+                )
+            };
+
+        Ok((name, bytes, source, description, author, resolved_version))
+    }
+
+    pub async fn install_skill(
+        &self,
+        target: &str,
+        version: Option<String>,
+    ) -> Result<InstalledSkill, PackageError> {
+        let (name, bytes, source, description, author, resolved_version) =
+            self.resolve_skill_artifact(target, version.as_deref()).await?;
+
+        let skills_dir = self.base_dir.join("skills");
+        std::fs::create_dir_all(&skills_dir)?;
+
+        let dest = skills_dir.join(&name);
+        if dest.exists() {
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+        std::fs::create_dir_all(&dest)?;
+
+        // Extract the bundle; the returned root path isn't needed further.
+        let _ = extract_skill_bundle(&bytes, &dest, &name)?;
+
+        let version = version
+            .unwrap_or_else(|| resolved_version.unwrap_or_else(|| "0.1.0".to_string()));
+
+        let files = walk_skill_files(&dest, &name)?;
+
+        let installed = InstalledSkill {
+            name: name.clone(),
+            description,
+            version,
+            author,
+            source,
+            files,
+        };
+
+        let mut lockfile = self.load_skills_lockfile();
+        lockfile.skills.insert(name.clone(), installed.clone());
+        self.save_skills_lockfile(&lockfile)?;
+
+        Ok(installed)
+    }
+
+    pub fn uninstall_skill(&self, name: &str) -> Result<bool, PackageError> {
+        let mut lockfile = self.load_skills_lockfile();
+        if let Some(skill) = lockfile.skills.remove(name) {
+            let dir = self.base_dir.join("skills").join(&skill.name);
+            let _ = std::fs::remove_dir_all(&dir);
+            self.save_skills_lockfile(&lockfile)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub async fn check_skill_updates(
+        &self,
+        names: Option<&[String]>,
+    ) -> Result<Vec<PluginUpdateStatus>, PackageError> {
+        let lockfile = self.load_skills_lockfile();
+        let registry = self.fetch_skills().await?;
+
+        let mut statuses = Vec::new();
+        for (name, installed) in &lockfile.skills {
+            if let Some(filter) = names {
+                if !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                    continue;
+                }
+            }
+            if let Some(reg) = registry.iter().find(|s| s.name == *name) {
+                let has_update = is_newer_version(&reg.latest, &installed.version);
+                statuses.push(PluginUpdateStatus {
+                    name: name.clone(),
+                    has_wasm: false,
+                    has_native: false,
+                    installed_version: installed.version.clone(),
+                    latest_version: reg.latest.clone(),
+                    has_update,
+                });
+            }
+        }
+        statuses.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(statuses)
+    }
+}
+
+/// Extract a skill artifact bundle into `dest_dir`, preserving the real entry
+/// names (unlike the plugin extractor, which renames single files to the
+/// default name). Handles zip, tar.gz, and a single-file bundle.
+fn extract_skill_bundle(
+    bytes: &[u8],
+    dest_dir: &Path,
+    default_name: &str,
+) -> Result<PathBuf, PackageError> {
+    if bytes.starts_with(b"PK\x03\x04") {
+        let reader = Cursor::new(bytes);
+        let mut zip = zip::ZipArchive::new(reader)
+            .map_err(|e| PackageError::InvalidSpec(format!("Failed to read zip archive: {}", e)))?;
+
+        for i in 0..zip.len() {
+            let mut file = zip
+                .by_index(i)
+                .map_err(|e| PackageError::InvalidSpec(format!("Zip entry error: {}", e)))?;
+            let enclosed = file
+                .enclosed_name()
+                .ok_or_else(|| PackageError::InvalidSpec("Invalid zip entry path traversal".to_string()))?;
+            let outpath = dest_dir.join(enclosed);
+
+            if file.is_dir() {
+                std::fs::create_dir_all(&outpath)?;
+            } else {
+                if let Some(p) = outpath.parent() {
+                    std::fs::create_dir_all(p)?;
+                }
+                let mut outfile = std::fs::File::create(&outpath)?;
+                std::io::copy(&mut file, &mut outfile)?;
+            }
+        }
+        Ok(dest_dir.to_path_buf())
+    } else if bytes.starts_with(b"\x1f\x8b") {
+        let gz = GzDecoder::new(bytes);
+        let mut archive = Archive::new(gz);
+        archive.unpack(dest_dir)?;
+        Ok(dest_dir.to_path_buf())
+    } else {
+        let file_name = default_name.to_string();
+        let outpath = dest_dir.join(&file_name);
+        std::fs::write(&outpath, bytes)?;
+        Ok(outpath)
+    }
+}
+
+fn walk_skill_files(root: &Path, _skill_name: &str) -> Result<Vec<SkillFile>, PackageError> {
+    let mut files = Vec::new();
+    if root.exists() {
+        collect_skill_files(root, root, &mut files)?;
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+fn collect_skill_files(dir: &Path, root: &Path, out: &mut Vec<SkillFile>) -> Result<(), PackageError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        if path.is_dir() {
+            collect_skill_files(&path, root, out)?;
+        } else {
+            let mut hasher = Sha256::new();
+            hasher.update(std::fs::read(&path)?);
+            let sha = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
+            out.push(SkillFile {
+                path: rel.to_string_lossy().to_string(),
+                sha256: Some(sha),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub fn current_target_triple() -> &'static str {

@@ -1,4 +1,6 @@
-use rune_kit_core::{Lockfile, PluginUpdateStatus, RegistryPluginSummary};
+use rune_kit_core::{
+    InstalledSkill, Lockfile, PluginUpdateStatus, RegistryPluginSummary, RegistrySkillSummary,
+};
 
 pub struct Column {
     pub name: &'static str,
@@ -139,7 +141,7 @@ mod tests {
     }
 }
 
-fn truncate_display(s: &str, max_chars: usize) -> String {
+pub fn truncate_display(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
     }
@@ -231,6 +233,62 @@ pub fn render_list_table(lockfile: &Lockfile) -> Table {
             short_desc,
             p.source.clone(),
         ]);
+    }
+    t
+}
+
+/// Minimal shape shared by installed and registry skill rows so a single table
+/// renderer serves both the installed view and the remote-registry view.
+pub trait SkillRow {
+    fn name(&self) -> &str;
+    fn version(&self) -> &str;
+    fn description(&self) -> Option<&str>;
+    fn author(&self) -> Option<&str>;
+}
+
+impl SkillRow for InstalledSkill {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+}
+
+impl SkillRow for RegistrySkillSummary {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn version(&self) -> &str {
+        &self.latest
+    }
+    fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+}
+
+/// Skills are content, not code — so the table shows NAME/VERSION/AUTHOR/DESCRIPTION
+/// rather than the build columns plugins have.
+pub fn render_skills_table<S: SkillRow>(skills: &[S]) -> Table {
+    let mut t = Table::new(84)
+        .column(Column::fixed("NAME", 18))
+        .column(Column::fixed("VERSION", 10))
+        .column(Column::fixed("AUTHOR", 18))
+        .column(Column::flexible("DESCRIPTION", 30));
+    for s in skills {
+        let author = s.author().unwrap_or("-").to_string();
+        let desc = s.description().unwrap_or("-").to_string();
+        let short_desc = truncate_display(&desc, 28);
+        t.add_row(vec![s.name().to_string(), s.version().to_string(), author, short_desc]);
     }
     t
 }
