@@ -44,8 +44,8 @@ host_fn!(host_cmd_exec(input: String) -> String {
     let mut prog_path = PathBuf::from(&req.program);
 
     // Fallback search: Check plugins directory if not in PATH / not an absolute path
-    if !prog_path.is_absolute() && !prog_path.exists() {
-        if let Some(data_dir) = dirs::data_dir() {
+    if !prog_path.is_absolute() && !prog_path.exists()
+        && let Some(data_dir) = dirs::data_dir() {
             let plugins_dir = data_dir.join("rune-kit").join("plugins");
             let candidate = plugins_dir.join(&req.program);
             let candidate_exe = plugins_dir.join(format!("{}.exe", req.program));
@@ -55,7 +55,6 @@ host_fn!(host_cmd_exec(input: String) -> String {
                 prog_path = candidate_exe;
             }
         }
-    }
 
     let mut cmd = Command::new(&prog_path);
     cmd.args(&req.args);
@@ -346,11 +345,10 @@ impl NativeSidecar {
                 continue;
             }
 
-            if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
-                if val.is_object() {
+            if let Ok(val) = serde_json::from_str::<Value>(trimmed)
+                && val.is_object() {
                     return Ok(val);
                 }
-            }
         }
     }
 
@@ -421,16 +419,14 @@ impl NativeSidecar {
         }
 
         let res = resp.get("result").unwrap_or(&resp);
-        if let Some(content_arr) = res.get("content").and_then(Value::as_array) {
-            if let Some(first) = content_arr.first() {
-                if let Some(text) = first.get("text").and_then(Value::as_str) {
+        if let Some(content_arr) = res.get("content").and_then(Value::as_array)
+            && let Some(first) = content_arr.first()
+                && let Some(text) = first.get("text").and_then(Value::as_str) {
                     if let Ok(parsed) = serde_json::from_str::<Value>(text) {
                         return Ok(parsed);
                     }
                     return Ok(Value::String(text.to_string()));
                 }
-            }
-        }
 
         Ok(res.clone())
     }

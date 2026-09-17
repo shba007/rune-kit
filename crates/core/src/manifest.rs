@@ -3,16 +3,13 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExecutionKind {
+    #[default]
     Wasm,
     Native,
 }
 
-impl Default for ExecutionKind {
-    fn default() -> Self {
-        ExecutionKind::Wasm
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginInfo {

@@ -12,7 +12,7 @@ name = "rune_kit_cli"
 path = "src/lib.rs"
 
 [dependencies]
-rune-kit-core = { path = "../rune-kit-core" }
+rune-kit-core = { path = "../core" }
 tokio.workspace = true
 serde_json.workspace = true
 clap.workspace = true

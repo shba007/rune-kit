@@ -40,6 +40,12 @@ pub struct PackageManager {
     lockfile_path: PathBuf,
 }
 
+impl Default for PackageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PackageManager {
     pub fn new() -> Self {
         let base_dir = dirs::data_dir()
@@ -131,11 +137,10 @@ impl PackageManager {
 
         let mut statuses = Vec::new();
         for (name, installed) in &lockfile.plugins {
-            if let Some(filter) = names {
-                if !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            if let Some(filter) = names
+                && !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
                     continue;
                 }
-            }
 
             if let Some(reg_entry) = registry_map.get(name) {
                 let has_update = is_newer_version(&reg_entry.latest, &installed.version);
@@ -280,7 +285,9 @@ impl PackageManager {
     ) -> Result<InstalledPlugin, PackageError> {
         // Check for dual binary auto-install (local dir with both wasm and native)
         if let Some(dual_path) = should_auto_dual_install(target) {
-            return self.install_dual_binaries(dual_path.to_path_buf(), version).await;
+            return self
+                .install_dual_binaries(dual_path.to_path_buf(), version)
+                .await;
         }
 
         let bundle = if target.ends_with(".wasm") && Path::new(target).exists() {
@@ -322,7 +329,7 @@ impl PackageManager {
             let res = reqwest::get(target).await?.bytes().await?.to_vec();
             let name = target
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("plugin")
                 .replace(".wasm", "")
                 .replace(".zip", "")
@@ -365,13 +372,13 @@ impl PackageManager {
             None,
         );
 
-        if let Some(ref wasm_bytes) = bundle.wasm_bytes {
-            if let Ok(mut instance) = WasmPluginInstance::load_from_bytes(
+        if let Some(ref wasm_bytes) = bundle.wasm_bytes
+            && let Ok(mut instance) = WasmPluginInstance::load_from_bytes(
                 &bundle.name,
                 wasm_bytes.clone(),
                 probe_params.clone(),
-            ) {
-                if let Ok(info) = instance.get_info() {
+            )
+                && let Ok(info) = instance.get_info() {
                     final_name = if bundle.name.is_empty() {
                         info.name
                     } else {
@@ -380,8 +387,6 @@ impl PackageManager {
                     final_ver = bundle.version.clone().unwrap_or(info.version);
                     final_desc = info.description;
                 }
-            }
-        }
 
         sanitize_path_component(&final_name, "plugin name")?;
         sanitize_path_component(&final_ver, "plugin version")?;
@@ -419,16 +424,13 @@ impl PackageManager {
                 extract_archive_or_binary(native_bytes, &temp_extract_dir, &final_name)?;
             set_executable_permissions(&extracted_binary)?;
 
-            if final_desc.is_none() {
-                if let Ok(mut sidecar) =
+            if final_desc.is_none()
+                && let Ok(mut sidecar) =
                     NativeSidecar::new(&final_name, &extracted_binary, probe_params)
-                {
-                    if let Ok(info) = sidecar.get_info() {
+                    && let Ok(info) = sidecar.get_info() {
                         final_ver = bundle.version.clone().unwrap_or(info.version);
                         final_desc = info.description;
                     }
-                }
-            }
 
             let bin_file_name = extracted_binary
                 .file_name()
@@ -530,7 +532,7 @@ impl PackageManager {
                 n.get(triple)
                     .or_else(|| n.get(std::env::consts::OS))
                     .or_else(|| {
-                        n.get(&format!(
+                        n.get(format!(
                             "{}-{}",
                             std::env::consts::OS,
                             std::env::consts::ARCH
@@ -585,8 +587,9 @@ impl PackageManager {
         path: PathBuf,
         version: Option<String>,
     ) -> Result<InstalledPlugin, PackageError> {
-        let (wasm_path, native_path) = find_dual_binaries(&path)
-            .ok_or_else(|| PackageError::InvalidSpec("No dual binaries found in path".to_string()))?;
+        let (wasm_path, native_path) = find_dual_binaries(&path).ok_or_else(|| {
+            PackageError::InvalidSpec("No dual binaries found in path".to_string())
+        })?;
 
         // Read both binaries
         let wasm_bytes = std::fs::read(&wasm_path)?;
@@ -595,14 +598,24 @@ impl PackageManager {
         let name = wasm_path
             .file_stem()
             .and_then(|s| s.to_str())
-            .ok_or_else(|| PackageError::InvalidSpec("Cannot derive plugin name from path".to_string()))?
+            .ok_or_else(|| {
+                PackageError::InvalidSpec("Cannot derive plugin name from path".to_string())
+            })?
             .to_string();
 
         let source = format!("local ({})", path.to_string_lossy());
 
         println!("Dual binary install detected for '{}':", name);
-        println!("  Installing WASM build: {} ({})", wasm_path.display(), format_bytes(wasm_bytes.len()));
-        println!("  Installing native build: {} ({})", native_path.display(), format_bytes(native_bytes.len()));
+        println!(
+            "  Installing WASM build: {} ({})",
+            wasm_path.display(),
+            format_bytes(wasm_bytes.len())
+        );
+        println!(
+            "  Installing native build: {} ({})",
+            native_path.display(),
+            format_bytes(native_bytes.len())
+        );
 
         // Create bundles (clone bytes and version for both)
         let wasm_bundle = FetchedBundle {
@@ -632,17 +645,17 @@ impl PackageManager {
         );
 
         // Probe WASM
-        if let Ok(mut instance) = WasmPluginInstance::load_from_bytes(
-            &name,
-            wasm_bytes.clone(),
-            probe_params.clone(),
-        ) {
-            if let Ok(info) = instance.get_info() {
-                final_name = if name.is_empty() { info.name } else { name.clone() };
+        if let Ok(mut instance) =
+            WasmPluginInstance::load_from_bytes(&name, wasm_bytes.clone(), probe_params.clone())
+            && let Ok(info) = instance.get_info() {
+                final_name = if name.is_empty() {
+                    info.name
+                } else {
+                    name.clone()
+                };
                 final_ver = version.clone().unwrap_or(info.version);
                 final_desc = info.description;
             }
-        }
 
         sanitize_path_component(&final_name, "plugin name")?;
         sanitize_path_component(&final_ver, "plugin version")?;
@@ -679,19 +692,17 @@ impl PackageManager {
             let temp_extract_dir = plugins_dir.join(&temp_dir_name);
             std::fs::create_dir_all(&temp_extract_dir)?;
 
-            let extracted_binary = extract_archive_or_binary(native_bytes, &temp_extract_dir, &final_name)?;
+            let extracted_binary =
+                extract_archive_or_binary(native_bytes, &temp_extract_dir, &final_name)?;
             set_executable_permissions(&extracted_binary)?;
 
-            if final_desc.is_none() {
-                if let Ok(mut sidecar) =
+            if final_desc.is_none()
+                && let Ok(mut sidecar) =
                     NativeSidecar::new(&final_name, &extracted_binary, probe_params)
-                {
-                    if let Ok(info) = sidecar.get_info() {
+                    && let Ok(info) = sidecar.get_info() {
                         final_ver = native_bundle.version.clone().unwrap_or(info.version);
                         final_desc = info.description;
                     }
-                }
-            }
 
             let bin_file_name = extracted_binary
                 .file_name()
@@ -735,10 +746,15 @@ impl PackageManager {
         };
 
         let mut lockfile = self.load_lockfile();
-        lockfile.plugins.insert(final_name.clone(), installed.clone());
+        lockfile
+            .plugins
+            .insert(final_name.clone(), installed.clone());
         self.save_lockfile(&lockfile)?;
 
-        println!("Installed '{}' (v{}, wasm+native)", installed.name, installed.version);
+        println!(
+            "Installed '{}' (v{}, wasm+native)",
+            installed.name, installed.version
+        );
 
         Ok(installed)
     }
@@ -754,6 +770,12 @@ pub struct SkillManager {
     lockfile_path: PathBuf,
 }
 
+impl Default for SkillManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SkillManager {
     pub fn new() -> Self {
         let base_dir = dirs::data_dir()
@@ -763,7 +785,10 @@ impl SkillManager {
         let _ = std::fs::create_dir_all(base_dir.join("skills"));
         let lockfile_path = base_dir.join("installed_skills.json");
 
-        Self { base_dir, lockfile_path }
+        Self {
+            base_dir,
+            lockfile_path,
+        }
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -783,11 +808,8 @@ impl SkillManager {
         std::fs::write(&self.lockfile_path, content)
     }
 
-    pub async fn fetch_skills(
-        &self,
-    ) -> Result<Vec<RegistrySkillSummary>, PackageError> {
-        let skills_url =
-            "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/skills/index.json";
+    pub async fn fetch_skills(&self) -> Result<Vec<RegistrySkillSummary>, PackageError> {
+        let skills_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/skills/index.json";
         let client = reqwest::Client::new();
         let index: serde_json::Value = client.get(skills_url).send().await?.json().await?;
 
@@ -829,10 +851,7 @@ impl SkillManager {
         Ok(results)
     }
 
-    async fn fetch_skill_entry(
-        &self,
-        name: &str,
-    ) -> Result<serde_json::Value, PackageError> {
+    async fn fetch_skill_entry(&self, name: &str) -> Result<serde_json::Value, PackageError> {
         let skills_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/skills/index.json";
         let client = reqwest::Client::new();
         let index: serde_json::Value = client.get(skills_url).send().await?.json().await?;
@@ -847,59 +866,67 @@ impl SkillManager {
         target: &str,
         version: Option<&str>,
     ) -> Result<
-        (String, Vec<u8>, String, Option<String>, Option<String>, Option<String>),
+        (
+            String,
+            Vec<u8>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
         PackageError,
     > {
-        let (name, bytes, source, description, author, resolved_version) =
-            if target.starts_with("http://") || target.starts_with("https://") {
-                let url = target.to_string();
-                let name = url
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or("skill")
-                    .replace(".tar.gz", "")
-                    .replace(".zip", "");
-                let bytes = reqwest::get(&url).await?.bytes().await?.to_vec();
-                (name, bytes, url, None, None, None)
-            } else if Path::new(target).exists() {
-                let path = Path::new(target);
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("skill")
-                    .to_string();
-                let bytes = std::fs::read(path)?;
-                (name, bytes, target.to_string(), None, None, None)
-            } else {
-                let entry = self.fetch_skill_entry(target).await?;
-                let ver = version
-                    .unwrap_or_else(|| entry["latest"].as_str().unwrap_or("0.1.0"));
-                let url = entry
-                    .get("versions")
-                    .and_then(|v| v.get(&ver))
-                    .and_then(|vo| vo.get("url"))
-                    .and_then(|u| u.as_str())
-                    .ok_or_else(|| {
-                        PackageError::NotFound(format!("No artifact for skill '{}' (v{})", target, ver))
-                    })?;
-                let description = entry
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(ToString::to_string);
-                let author = entry
-                    .get("author")
-                    .and_then(|v| v.as_str())
-                    .map(ToString::to_string);
-                let bytes = reqwest::get(url).await?.bytes().await?.to_vec();
-                (
-                    target.to_string(),
-                    bytes,
-                    "registry".to_string(),
-                    description,
-                    author,
-                    Some(ver.to_string()),
-                )
-            };
+        let (name, bytes, source, description, author, resolved_version) = if target
+            .starts_with("http://")
+            || target.starts_with("https://")
+        {
+            let url = target.to_string();
+            let name = url
+                .rsplit('/')
+                .next()
+                .unwrap_or("skill")
+                .replace(".tar.gz", "")
+                .replace(".zip", "");
+            let bytes = reqwest::get(&url).await?.bytes().await?.to_vec();
+            (name, bytes, url, None, None, None)
+        } else if Path::new(target).exists() {
+            let path = Path::new(target);
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("skill")
+                .to_string();
+            let bytes = std::fs::read(path)?;
+            (name, bytes, target.to_string(), None, None, None)
+        } else {
+            let entry = self.fetch_skill_entry(target).await?;
+            let ver = version.unwrap_or_else(|| entry["latest"].as_str().unwrap_or("0.1.0"));
+            let url = entry
+                .get("versions")
+                .and_then(|v| v.get(ver))
+                .and_then(|vo| vo.get("url"))
+                .and_then(|u| u.as_str())
+                .ok_or_else(|| {
+                    PackageError::NotFound(format!("No artifact for skill '{}' (v{})", target, ver))
+                })?;
+            let description = entry
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let author = entry
+                .get("author")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            let bytes = reqwest::get(url).await?.bytes().await?.to_vec();
+            (
+                target.to_string(),
+                bytes,
+                "registry".to_string(),
+                description,
+                author,
+                Some(ver.to_string()),
+            )
+        };
 
         Ok((name, bytes, source, description, author, resolved_version))
     }
@@ -909,8 +936,9 @@ impl SkillManager {
         target: &str,
         version: Option<String>,
     ) -> Result<InstalledSkill, PackageError> {
-        let (name, bytes, source, description, author, resolved_version) =
-            self.resolve_skill_artifact(target, version.as_deref()).await?;
+        let (name, bytes, source, description, author, resolved_version) = self
+            .resolve_skill_artifact(target, version.as_deref())
+            .await?;
 
         let skills_dir = self.base_dir.join("skills");
         std::fs::create_dir_all(&skills_dir)?;
@@ -924,8 +952,8 @@ impl SkillManager {
         // Extract the bundle; the returned root path isn't needed further.
         let _ = extract_skill_bundle(&bytes, &dest, &name)?;
 
-        let version = version
-            .unwrap_or_else(|| resolved_version.unwrap_or_else(|| "0.1.0".to_string()));
+        let version =
+            version.unwrap_or_else(|| resolved_version.unwrap_or_else(|| "0.1.0".to_string()));
 
         let files = walk_skill_files(&dest, &name)?;
 
@@ -966,11 +994,10 @@ impl SkillManager {
 
         let mut statuses = Vec::new();
         for (name, installed) in &lockfile.skills {
-            if let Some(filter) = names {
-                if !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            if let Some(filter) = names
+                && !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
                     continue;
                 }
-            }
             if let Some(reg) = registry.iter().find(|s| s.name == *name) {
                 let has_update = is_newer_version(&reg.latest, &installed.version);
                 statuses.push(PluginUpdateStatus {
@@ -1005,9 +1032,9 @@ fn extract_skill_bundle(
             let mut file = zip
                 .by_index(i)
                 .map_err(|e| PackageError::InvalidSpec(format!("Zip entry error: {}", e)))?;
-            let enclosed = file
-                .enclosed_name()
-                .ok_or_else(|| PackageError::InvalidSpec("Invalid zip entry path traversal".to_string()))?;
+            let enclosed = file.enclosed_name().ok_or_else(|| {
+                PackageError::InvalidSpec("Invalid zip entry path traversal".to_string())
+            })?;
             let outpath = dest_dir.join(enclosed);
 
             if file.is_dir() {
@@ -1043,7 +1070,11 @@ fn walk_skill_files(root: &Path, _skill_name: &str) -> Result<Vec<SkillFile>, Pa
     Ok(files)
 }
 
-fn collect_skill_files(dir: &Path, root: &Path, out: &mut Vec<SkillFile>) -> Result<(), PackageError> {
+fn collect_skill_files(
+    dir: &Path,
+    root: &Path,
+    out: &mut Vec<SkillFile>,
+) -> Result<(), PackageError> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -1117,11 +1148,11 @@ fn can_contain_dual_binaries(target: &str) -> bool {
 fn should_auto_dual_install(target: &str) -> Option<&Path> {
     if can_contain_dual_binaries(target) {
         let path = Path::new(target);
-        if let Some((wasm, native)) = find_dual_binaries(&path) {
+        if let Some((wasm, native)) = find_dual_binaries(path) {
             // Verify they're actually compatible with flexible name matching
             let wasm_base = wasm.file_stem().and_then(|s| s.to_str())?;
             let native_stem = native.file_stem().and_then(|s| s.to_str())?;
-            
+
             if names_match_flexible(wasm_base, native_stem) {
                 return Some(path);
             }
@@ -1138,21 +1169,21 @@ fn names_match_flexible(name1: &str, name2: &str) -> bool {
     // Normalize dashes to underscores for comparison
     let n1 = name1.replace('-', "_");
     let n2 = name2.replace('-', "_");
-    
+
     // Check if they match directly (case-insensitive)
     if n1.eq_ignore_ascii_case(&n2) {
         return true;
     }
-    
+
     // Check if one has "-native" suffix (or "_native")
     let (a, b) = (n1.as_str(), n2.as_str());
-    if a.ends_with("_native") && b.eq_ignore_ascii_case(&a[..a.len()-7]) {
+    if a.ends_with("_native") && b.eq_ignore_ascii_case(&a[..a.len() - 7]) {
         return true;
     }
-    if b.ends_with("_native") && a.eq_ignore_ascii_case(&b[..b.len()-7]) {
+    if b.ends_with("_native") && a.eq_ignore_ascii_case(&b[..b.len() - 7]) {
         return true;
     }
-    
+
     false
 }
 
@@ -1316,7 +1347,7 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
                 if cfg!(windows) {
                     if path
                         .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("exe"))
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
                     {
                         candidates.push(path);
                     }
@@ -1326,11 +1357,10 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
                 {
                     candidates.push(path);
                 }
-            } else if path.is_dir() {
-                if let Ok(found) = find_executable_in_dir(&path, expected_name) {
+            } else if path.is_dir()
+                && let Ok(found) = find_executable_in_dir(&path, expected_name) {
                     return Ok(found);
                 }
-            }
         }
     }
 

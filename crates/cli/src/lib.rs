@@ -21,7 +21,7 @@ pub enum Commands {
         param: Vec<(String, String)>,
     },
     /// Install an artifact from registry, URL, or local path
-    /// 
+    ///
     /// For plugins (MCP tools): uses WASM or native sidecar execution model
     /// For skills (content): standalone documentation artifacts that guide tool use
     Install {
@@ -94,10 +94,12 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 pub mod output;
 
 use crate::output::{
-    render_list_table, render_update_status_table,
-    Column, Table, truncate_display,
+    Column, Table, render_list_table, render_update_status_table, truncate_display,
 };
-use rune_kit_core::{ExecutionKind, McpRouter, PackageManager, PluginInstance, PluginUpdateStatus, SkillManager, is_newer_version};
+use rune_kit_core::{
+    ExecutionKind, McpRouter, PackageManager, PluginInstance, PluginUpdateStatus, SkillManager,
+    is_newer_version,
+};
 use std::collections::HashMap;
 
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -109,7 +111,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Run { plugin, all, param } => {
             let mut router = McpRouter::new();
             let mut params_map = resolve_host_env_params();
-            params_map.extend(param.into_iter());
+            params_map.extend(param);
 
             if all {
                 let lockfile = pm.load_lockfile();
@@ -143,7 +145,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 } else {
                     let p = std::path::PathBuf::from(&target);
-                    let kind = if p.extension().map_or(false, |ext| ext == "wasm") {
+                    let kind = if p.extension().is_some_and(|ext| ext == "wasm") {
                         ExecutionKind::Wasm
                     } else {
                         ExecutionKind::Native
@@ -167,7 +169,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             router.run_stdio()?;
         }
-        Commands::Install { target, version, _reserved_for_future } => {
+        Commands::Install {
+            target,
+            version,
+            _reserved_for_future,
+        } => {
             // Detect if target is a skill or plugin
             let is_skill = target.ends_with(".md")
                 || target.ends_with(".txt")
@@ -202,11 +208,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 // Show additional info if available
-                if let Some(ref desc) = installed.description {
-                    if !desc.is_empty() {
+                if let Some(ref desc) = installed.description
+                    && !desc.is_empty() {
                         println!("  Description: {}", desc);
                     }
-                }
                 if installed.source != "registry" {
                     println!("  Source: {}", installed.source);
                 }
@@ -249,7 +254,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            let has_content = lockfile.plugins.is_empty() == false || skill_lockfile.skills.is_empty() == false;
+            let has_content =
+                !lockfile.plugins.is_empty() || !skill_lockfile.skills.is_empty();
             if !has_content {
                 println!(
                     "No artifacts installed. Use `rune install <name>` for plugins or `rune install <path>` for skills."
@@ -263,7 +269,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let plugin_available = pm.fetch_registry().await?;
             let lockfile = pm.load_lockfile();
             if !plugin_available.is_empty() {
-                println!("\nAvailable Plugins ({} in registry):", plugin_available.len());
+                println!(
+                    "\nAvailable Plugins ({} in registry):",
+                    plugin_available.len()
+                );
                 let mut t = Table::new(88)
                     .column(Column::fixed("NAME", 20))
                     .column(Column::fixed("CURRENT", 10))
@@ -296,7 +305,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Skills
             let skill_available = sm.fetch_skills().await?;
             if !skill_available.is_empty() {
-                println!("\nAvailable Skills ({} in registry):", skill_available.len());
+                println!(
+                    "\nAvailable Skills ({} in registry):",
+                    skill_available.len()
+                );
                 let mut t = Table::new(88)
                     .column(Column::fixed("NAME", 20))
                     .column(Column::fixed("CURRENT", 10))
@@ -313,7 +325,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            let has_content = plugin_available.is_empty() == false || skill_available.is_empty() == false;
+            let has_content =
+                !plugin_available.is_empty() || !skill_available.is_empty();
             if !has_content {
                 println!("No artifacts found in the registries.");
                 return Ok(());
@@ -328,7 +341,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(available) = pm.fetch_registry().await {
                 for p in available {
                     if p.name.to_lowercase().contains(&kw_lower)
-                        || p.description.as_deref().unwrap_or("").to_lowercase().contains(&kw_lower)
+                        || p.description
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&kw_lower)
                     {
                         matches.push(SearchResult {
                             ty: "plugin".to_string(),
@@ -344,7 +361,11 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(available) = sm.fetch_skills().await {
                 for s in available {
                     if s.name.to_lowercase().contains(&kw_lower)
-                        || s.description.as_deref().unwrap_or("").to_lowercase().contains(&kw_lower)
+                        || s.description
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&kw_lower)
                         || s.tags.iter().any(|t| t.to_lowercase().contains(&kw_lower))
                     {
                         matches.push(SearchResult {
@@ -372,12 +393,22 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             for item in &matches {
                 let short_desc = truncate_display(&item.description, 28);
-                t.add_row(vec![item.ty.clone(), item.name.clone(), item.latest.clone(), item.description.clone(), short_desc]);
+                t.add_row(vec![
+                    item.ty.clone(),
+                    item.name.clone(),
+                    item.latest.clone(),
+                    item.description.clone(),
+                    short_desc,
+                ]);
             }
 
             t.render();
         }
-        Commands::Update { names, check, _reserved_for_future } => {
+        Commands::Update {
+            names,
+            check,
+            _reserved_for_future,
+        } => {
             let filter = if names.is_empty() {
                 None
             } else {
@@ -389,32 +420,26 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let all_statuses = plugin_statuses
                 .into_iter()
-                .map(|s| {
-                    PluginUpdateStatus {
-                        name: s.name,
-                        has_wasm: s.has_wasm,
-                        has_native: s.has_native,
-                        installed_version: s.installed_version,
-                        latest_version: s.latest_version,
-                        has_update: s.has_update,
-                    }
+                .map(|s| PluginUpdateStatus {
+                    name: s.name,
+                    has_wasm: s.has_wasm,
+                    has_native: s.has_native,
+                    installed_version: s.installed_version,
+                    latest_version: s.latest_version,
+                    has_update: s.has_update,
                 })
-                .chain(skill_statuses.into_iter().map(|s| {
-                    PluginUpdateStatus {
-                        name: s.name,
-                        has_wasm: false,
-                        has_native: false,
-                        installed_version: s.installed_version,
-                        latest_version: s.latest_version,
-                        has_update: s.has_update,
-                    }
+                .chain(skill_statuses.into_iter().map(|s| PluginUpdateStatus {
+                    name: s.name,
+                    has_wasm: false,
+                    has_native: false,
+                    installed_version: s.installed_version,
+                    latest_version: s.latest_version,
+                    has_update: s.has_update,
                 }))
                 .collect::<Vec<_>>();
 
             if all_statuses.is_empty() {
-                println!(
-                    "No matching installed artifacts found to inspect or update."
-                );
+                println!("No matching installed artifacts found to inspect or update.");
                 return Ok(());
             }
 
@@ -444,24 +469,36 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 if is_skill {
-                    let installed = sm.install_skill(&item.name, Some(item.latest_version)).await?;
-                    println!("Successfully updated skill '{}' to v{}", installed.name, installed.version);
+                    let installed = sm
+                        .install_skill(&item.name, Some(item.latest_version))
+                        .await?;
+                    println!(
+                        "Successfully updated skill '{}' to v{}",
+                        installed.name, installed.version
+                    );
                 } else {
-                    let installed = pm.install(&item.name, Some(item.latest_version), false).await?;
-                    let kind_label = match (
-                        &installed.native_binary_path,
-                        &installed.execution_kind,
-                    ) {
-                        (Some(_), ExecutionKind::Native) => "native",
-                        (Some(_), ExecutionKind::Wasm) => "wasm+native",
-                        (None, ExecutionKind::Native) => "native",
-                        (None, ExecutionKind::Wasm) => "wasm",
-                    };
-                    println!("Successfully updated plugin '{}' to v{} ({})", installed.name, installed.version, kind_label);
+                    let installed = pm
+                        .install(&item.name, Some(item.latest_version), false)
+                        .await?;
+                    let kind_label =
+                        match (&installed.native_binary_path, &installed.execution_kind) {
+                            (Some(_), ExecutionKind::Native) => "native",
+                            (Some(_), ExecutionKind::Wasm) => "wasm+native",
+                            (None, ExecutionKind::Native) => "native",
+                            (None, ExecutionKind::Wasm) => "wasm",
+                        };
+                    println!(
+                        "Successfully updated plugin '{}' to v{} ({})",
+                        installed.name, installed.version, kind_label
+                    );
                 }
             }
         }
-        Commands::SelfUpdate { check, version, force } => {
+        Commands::SelfUpdate {
+            check,
+            version,
+            force,
+        } => {
             let current_ver = env!("CARGO_PKG_VERSION");
             if check {
                 let (tag, _) = pm.fetch_latest_cli_release(version.as_deref()).await?;

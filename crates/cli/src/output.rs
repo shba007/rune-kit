@@ -10,11 +10,19 @@ pub struct Column {
 
 impl Column {
     pub fn fixed(name: &'static str, width: usize) -> Self {
-        Self { name, width, flexible: false }
+        Self {
+            name,
+            width,
+            flexible: false,
+        }
     }
 
     pub fn flexible(name: &'static str, min_width: usize) -> Self {
-        Self { name, width: min_width, flexible: true }
+        Self {
+            name,
+            width: min_width,
+            flexible: true,
+        }
     }
 }
 
@@ -26,7 +34,11 @@ pub struct Table {
 
 impl Table {
     pub fn new(budget: usize) -> Self {
-        Self { budget, columns: Vec::new(), rows: Vec::new() }
+        Self {
+            budget,
+            columns: Vec::new(),
+            rows: Vec::new(),
+        }
     }
 
     pub fn column(mut self, column: Column) -> Self {
@@ -63,7 +75,16 @@ impl Table {
             .collect();
 
         let mut out = Vec::with_capacity(self.rows.len() + 2);
-        out.push(self.format_row(&self.columns.iter().map(|c| c.name.to_string()).collect::<Vec<_>>(), &widths));
+        out.push(
+            self.format_row(
+                &self
+                    .columns
+                    .iter()
+                    .map(|c| c.name.to_string())
+                    .collect::<Vec<_>>(),
+                &widths,
+            ),
+        );
         out.push("-".repeat(fixed_total));
         for row in &self.rows {
             out.push(self.format_row(row, &widths));
@@ -78,7 +99,7 @@ impl Table {
                 out.push(' ');
             }
             let w = widths[i.min(widths.len() - 1)];
-            let text = if self.columns.get(i).map_or(false, |c| c.flexible) {
+            let text = if self.columns.get(i).is_some_and(|c| c.flexible) {
                 truncate_to(cell, w)
             } else {
                 cell.clone()
@@ -96,49 +117,6 @@ fn truncate_to(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars.saturating_sub(3)).collect();
     out.push_str("...");
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flexible_column_gets_leftover_budget() {
-        let t = Table::new(100)
-            .column(Column::fixed("NAME", 16))
-            .column(Column::fixed("LATEST", 10))
-            .column(Column::fixed("KIND", 14))
-            .column(Column::fixed("STATUS", 12))
-            .column(Column::flexible("DESCRIPTION", 40));
-        let rows = t.format_rows();
-        // 16+10+14+12 = 52 fixed, +4 seps = 56; flex = 44
-        assert_eq!(rows[0].len(), 100);
-    }
-
-    #[test]
-    fn truncation_is_char_aware() {
-        assert_eq!(truncate_to("hello world", 8), "hello...");
-        assert_eq!(truncate_to("short", 8), "short");
-    }
-
-    #[test]
-    fn flexible_column_does_not_truncate_when_content_fits() {
-        let t = Table::new(100)
-            .column(Column::fixed("NAME", 16))
-            .column(Column::fixed("LATEST", 10))
-            .column(Column::fixed("KIND", 14))
-            .column(Column::fixed("STATUS", 12))
-            .column(Column::flexible("DESCRIPTION", 40));
-        let rows = t.format_rows();
-        // "DESCRIPTION" (11 chars) fits in 44-char flexible column without truncation
-        let row = &rows[0];
-        assert_eq!(row.len(), 100);
-        // The flexible column starts at position 56 (after all fixed columns + separators)
-        let flex_start = 16 + 1 + 10 + 1 + 14 + 1 + 12 + 1; // 56
-        assert_eq!(row[flex_start..].len(), 44);
-        assert_eq!(&row[flex_start..flex_start + 11], "DESCRIPTION");
-        assert!(row[flex_start + 11..flex_start + 44].chars().all(|c| c == ' '));
-    }
 }
 
 pub fn truncate_display(s: &str, max_chars: usize) -> String {
@@ -218,7 +196,10 @@ pub fn render_list_table(lockfile: &Lockfile) -> Table {
         .column(Column::fixed("DESCRIPTION", 34))
         .column(Column::flexible("SOURCE", 14));
     for (name, p) in &lockfile.plugins {
-        let builds = match (p.binary_path.ends_with(".wasm"), p.native_binary_path.is_some()) {
+        let builds = match (
+            p.binary_path.ends_with(".wasm"),
+            p.native_binary_path.is_some(),
+        ) {
             (true, true) => "wasm, native",
             (true, false) => "wasm",
             (false, true) => "native",
@@ -288,7 +269,59 @@ pub fn render_skills_table<S: SkillRow>(skills: &[S]) -> Table {
         let author = s.author().unwrap_or("-").to_string();
         let desc = s.description().unwrap_or("-").to_string();
         let short_desc = truncate_display(&desc, 28);
-        t.add_row(vec![s.name().to_string(), s.version().to_string(), author, short_desc]);
+        t.add_row(vec![
+            s.name().to_string(),
+            s.version().to_string(),
+            author,
+            short_desc,
+        ]);
     }
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flexible_column_gets_leftover_budget() {
+        let t = Table::new(100)
+            .column(Column::fixed("NAME", 16))
+            .column(Column::fixed("LATEST", 10))
+            .column(Column::fixed("KIND", 14))
+            .column(Column::fixed("STATUS", 12))
+            .column(Column::flexible("DESCRIPTION", 40));
+        let rows = t.format_rows();
+        // 16+10+14+12 = 52 fixed, +4 seps = 56; flex = 44
+        assert_eq!(rows[0].len(), 100);
+    }
+
+    #[test]
+    fn truncation_is_char_aware() {
+        assert_eq!(truncate_to("hello world", 8), "hello...");
+        assert_eq!(truncate_to("short", 8), "short");
+    }
+
+    #[test]
+    fn flexible_column_does_not_truncate_when_content_fits() {
+        let t = Table::new(100)
+            .column(Column::fixed("NAME", 16))
+            .column(Column::fixed("LATEST", 10))
+            .column(Column::fixed("KIND", 14))
+            .column(Column::fixed("STATUS", 12))
+            .column(Column::flexible("DESCRIPTION", 40));
+        let rows = t.format_rows();
+        // "DESCRIPTION" (11 chars) fits in 44-char flexible column without truncation
+        let row = &rows[0];
+        assert_eq!(row.len(), 100);
+        // The flexible column starts at position 56 (after all fixed columns + separators)
+        let flex_start = 16 + 1 + 10 + 1 + 14 + 1 + 12 + 1; // 56
+        assert_eq!(row[flex_start..].len(), 44);
+        assert_eq!(&row[flex_start..flex_start + 11], "DESCRIPTION");
+        assert!(
+            row[flex_start + 11..flex_start + 44]
+                .chars()
+                .all(|c| c == ' ')
+        );
+    }
 }

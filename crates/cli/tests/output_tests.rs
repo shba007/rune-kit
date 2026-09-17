@@ -18,7 +18,10 @@ fn sample_lockfile() -> Lockfile {
             default_params: HashMap::new(),
         },
     );
-    Lockfile { version: 1, plugins }
+    Lockfile {
+        version: 1,
+        plugins,
+    }
 }
 
 #[test]
@@ -26,7 +29,10 @@ fn registry_table_header_matches_layout() {
     let rows = render_registry_table(&[], &sample_lockfile()).format_rows();
     assert_eq!(
         rows[0],
-        format!("{:<20} {:<10} {:<10} {:<14} {:<30}", "NAME", "CURRENT", "LATEST", "BUILDS", "DESCRIPTION")
+        format!(
+            "{:<20} {:<10} {:<10} {:<14} {:<30}",
+            "NAME", "CURRENT", "LATEST", "BUILDS", "DESCRIPTION"
+        )
     );
 }
 
@@ -35,7 +41,10 @@ fn update_table_header_matches_layout() {
     let rows = render_update_status_table(&[]).format_rows();
     assert_eq!(
         rows[0],
-        format!("{:<16} {:<12} {:<12} {:<14} {:<12}", "PLUGIN", "CURRENT", "LATEST", "STATUS", "BUILDS")
+        format!(
+            "{:<16} {:<12} {:<12} {:<14} {:<12}",
+            "PLUGIN", "CURRENT", "LATEST", "STATUS", "BUILDS"
+        )
     );
 }
 
@@ -44,6 +53,9 @@ fn list_table_header_matches_layout() {
     let rows = render_list_table(&sample_lockfile()).format_rows();
     assert_eq!(
         rows[0],
-        format!("{:<14} {:<10} {:<8} {:<34} {:<14}", "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE")
+        format!(
+            "{:<14} {:<10} {:<8} {:<34} {:<14}",
+            "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE"
+        )
     );
 }

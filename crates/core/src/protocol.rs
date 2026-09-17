@@ -17,6 +17,12 @@ pub fn parse_resource_uri(uri: &str) -> Option<(&str, &str)> {
     Some((namespace, local_uri))
 }
 
+impl Default for McpRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpRouter {
     pub fn new() -> Self {
         Self {
@@ -101,11 +107,16 @@ impl McpRouter {
                             }
                         }
                         Err(err) => {
-                            eprintln!("[Rune Error] Failed to list resources from '{}': {}", ns, err);
+                            eprintln!(
+                                "[Rune Error] Failed to list resources from '{}': {}",
+                                ns, err
+                            );
                         }
                     }
                 }
-                Some(json!({ "jsonrpc": "2.0", "id": id, "result": { "resources": all_resources } }))
+                Some(
+                    json!({ "jsonrpc": "2.0", "id": id, "result": { "resources": all_resources } }),
+                )
             }
             "prompts/list" => {
                 let mut all_prompts = Vec::new();

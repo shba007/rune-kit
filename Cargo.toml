@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/rune-kit-core", "crates/rune-kit-cli"]
+members = ["crates/core", "crates/cli"]
 resolver = "2"
 
 [workspace.package]
