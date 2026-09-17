@@ -138,9 +138,10 @@ impl PackageManager {
         let mut statuses = Vec::new();
         for (name, installed) in &lockfile.plugins {
             if let Some(filter) = names
-                && !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                    continue;
-                }
+                && !filter.iter().any(|n| n.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
 
             if let Some(reg_entry) = registry_map.get(name) {
                 let has_update = is_newer_version(&reg_entry.latest, &installed.version);
@@ -378,15 +379,16 @@ impl PackageManager {
                 wasm_bytes.clone(),
                 probe_params.clone(),
             )
-                && let Ok(info) = instance.get_info() {
-                    final_name = if bundle.name.is_empty() {
-                        info.name
-                    } else {
-                        bundle.name.clone()
-                    };
-                    final_ver = bundle.version.clone().unwrap_or(info.version);
-                    final_desc = info.description;
-                }
+            && let Ok(info) = instance.get_info()
+        {
+            final_name = if bundle.name.is_empty() {
+                info.name
+            } else {
+                bundle.name.clone()
+            };
+            final_ver = bundle.version.clone().unwrap_or(info.version);
+            final_desc = info.description;
+        }
 
         sanitize_path_component(&final_name, "plugin name")?;
         sanitize_path_component(&final_ver, "plugin version")?;
@@ -427,10 +429,11 @@ impl PackageManager {
             if final_desc.is_none()
                 && let Ok(mut sidecar) =
                     NativeSidecar::new(&final_name, &extracted_binary, probe_params)
-                    && let Ok(info) = sidecar.get_info() {
-                        final_ver = bundle.version.clone().unwrap_or(info.version);
-                        final_desc = info.description;
-                    }
+                && let Ok(info) = sidecar.get_info()
+            {
+                final_ver = bundle.version.clone().unwrap_or(info.version);
+                final_desc = info.description;
+            }
 
             let bin_file_name = extracted_binary
                 .file_name()
@@ -647,15 +650,16 @@ impl PackageManager {
         // Probe WASM
         if let Ok(mut instance) =
             WasmPluginInstance::load_from_bytes(&name, wasm_bytes.clone(), probe_params.clone())
-            && let Ok(info) = instance.get_info() {
-                final_name = if name.is_empty() {
-                    info.name
-                } else {
-                    name.clone()
-                };
-                final_ver = version.clone().unwrap_or(info.version);
-                final_desc = info.description;
-            }
+            && let Ok(info) = instance.get_info()
+        {
+            final_name = if name.is_empty() {
+                info.name
+            } else {
+                name.clone()
+            };
+            final_ver = version.clone().unwrap_or(info.version);
+            final_desc = info.description;
+        }
 
         sanitize_path_component(&final_name, "plugin name")?;
         sanitize_path_component(&final_ver, "plugin version")?;
@@ -699,10 +703,11 @@ impl PackageManager {
             if final_desc.is_none()
                 && let Ok(mut sidecar) =
                     NativeSidecar::new(&final_name, &extracted_binary, probe_params)
-                    && let Ok(info) = sidecar.get_info() {
-                        final_ver = native_bundle.version.clone().unwrap_or(info.version);
-                        final_desc = info.description;
-                    }
+                && let Ok(info) = sidecar.get_info()
+            {
+                final_ver = native_bundle.version.clone().unwrap_or(info.version);
+                final_desc = info.description;
+            }
 
             let bin_file_name = extracted_binary
                 .file_name()
@@ -995,9 +1000,10 @@ impl SkillManager {
         let mut statuses = Vec::new();
         for (name, installed) in &lockfile.skills {
             if let Some(filter) = names
-                && !filter.iter().any(|n| n.eq_ignore_ascii_case(name)) {
-                    continue;
-                }
+                && !filter.iter().any(|n| n.eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
             if let Some(reg) = registry.iter().find(|s| s.name == *name) {
                 let has_update = is_newer_version(&reg.latest, &installed.version);
                 statuses.push(PluginUpdateStatus {
@@ -1358,9 +1364,10 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
                     candidates.push(path);
                 }
             } else if path.is_dir()
-                && let Ok(found) = find_executable_in_dir(&path, expected_name) {
-                    return Ok(found);
-                }
+                && let Ok(found) = find_executable_in_dir(&path, expected_name)
+            {
+                return Ok(found);
+            }
         }
     }
 

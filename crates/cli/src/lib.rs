@@ -209,9 +209,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Show additional info if available
                 if let Some(ref desc) = installed.description
-                    && !desc.is_empty() {
-                        println!("  Description: {}", desc);
-                    }
+                    && !desc.is_empty()
+                {
+                    println!("  Description: {}", desc);
+                }
                 if installed.source != "registry" {
                     println!("  Source: {}", installed.source);
                 }
@@ -254,8 +255,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            let has_content =
-                !lockfile.plugins.is_empty() || !skill_lockfile.skills.is_empty();
+            let has_content = !lockfile.plugins.is_empty() || !skill_lockfile.skills.is_empty();
             if !has_content {
                 println!(
                     "No artifacts installed. Use `rune install <name>` for plugins or `rune install <path>` for skills."
@@ -325,8 +325,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            let has_content =
-                !plugin_available.is_empty() || !skill_available.is_empty();
+            let has_content = !plugin_available.is_empty() || !skill_available.is_empty();
             if !has_content {
                 println!("No artifacts found in the registries.");
                 return Ok(());

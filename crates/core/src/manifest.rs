@@ -10,7 +10,6 @@ pub enum ExecutionKind {
     Native,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginInfo {
     pub name: String,

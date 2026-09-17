@@ -346,9 +346,10 @@ impl NativeSidecar {
             }
 
             if let Ok(val) = serde_json::from_str::<Value>(trimmed)
-                && val.is_object() {
-                    return Ok(val);
-                }
+                && val.is_object()
+            {
+                return Ok(val);
+            }
         }
     }
 
@@ -421,12 +422,13 @@ impl NativeSidecar {
         let res = resp.get("result").unwrap_or(&resp);
         if let Some(content_arr) = res.get("content").and_then(Value::as_array)
             && let Some(first) = content_arr.first()
-                && let Some(text) = first.get("text").and_then(Value::as_str) {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-                        return Ok(parsed);
-                    }
-                    return Ok(Value::String(text.to_string()));
-                }
+            && let Some(text) = first.get("text").and_then(Value::as_str)
+        {
+            if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                return Ok(parsed);
+            }
+            return Ok(Value::String(text.to_string()));
+        }
 
         Ok(res.clone())
     }
