@@ -94,7 +94,7 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 pub mod output;
 
 use crate::output::{
-    render_list_table, render_registry_table, render_skills_table, render_update_status_table,
+    render_list_table, render_update_status_table,
     Column, Table, truncate_display,
 };
 use rune_kit_core::{ExecutionKind, McpRouter, PackageManager, PluginInstance, PluginUpdateStatus, SkillManager, is_newer_version};
@@ -195,10 +195,21 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (None, ExecutionKind::Native) => "native",
                     (None, ExecutionKind::Wasm) => "wasm",
                 };
+
                 println!(
                     "Installed '{}' (v{}, {})",
                     installed.name, installed.version, kind_label
                 );
+
+                // Show additional info if available
+                if let Some(ref desc) = installed.description {
+                    if !desc.is_empty() {
+                        println!("  Description: {}", desc);
+                    }
+                }
+                if installed.source != "registry" {
+                    println!("  Source: {}", installed.source);
+                }
             }
         }
         Commands::Uninstall { name } => {
@@ -376,7 +387,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let plugin_statuses = pm.check_plugin_updates(filter).await?;
             let skill_statuses = sm.check_skill_updates(filter).await?;
 
-            let mut all_statuses = plugin_statuses
+            let all_statuses = plugin_statuses
                 .into_iter()
                 .map(|s| {
                     PluginUpdateStatus {

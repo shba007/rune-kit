@@ -278,6 +278,11 @@ impl PackageManager {
         version: Option<String>,
         prefer_native: bool,
     ) -> Result<InstalledPlugin, PackageError> {
+        // Check for dual binary auto-install (local dir with both wasm and native)
+        if let Some(dual_path) = should_auto_dual_install(target) {
+            return self.install_dual_binaries(dual_path.to_path_buf(), version).await;
+        }
+
         let bundle = if target.ends_with(".wasm") && Path::new(target).exists() {
             let path = Path::new(target);
             let stem = path
@@ -572,6 +577,170 @@ impl PackageManager {
             native_bytes,
             source: "registry".to_string(),
         })
+    }
+
+    /// Install both WASM and native binaries from a local path containing both
+    async fn install_dual_binaries(
+        &self,
+        path: PathBuf,
+        version: Option<String>,
+    ) -> Result<InstalledPlugin, PackageError> {
+        let (wasm_path, native_path) = find_dual_binaries(&path)
+            .ok_or_else(|| PackageError::InvalidSpec("No dual binaries found in path".to_string()))?;
+
+        // Read both binaries
+        let wasm_bytes = std::fs::read(&wasm_path)?;
+        let native_bytes = std::fs::read(&native_path)?;
+
+        let name = wasm_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| PackageError::InvalidSpec("Cannot derive plugin name from path".to_string()))?
+            .to_string();
+
+        let source = format!("local ({})", path.to_string_lossy());
+
+        println!("Dual binary install detected for '{}':", name);
+        println!("  Installing WASM build: {} ({})", wasm_path.display(), format_bytes(wasm_bytes.len()));
+        println!("  Installing native build: {} ({})", native_path.display(), format_bytes(native_bytes.len()));
+
+        // Create bundles (clone bytes and version for both)
+        let wasm_bundle = FetchedBundle {
+            name: name.clone(),
+            version: version.clone(),
+            wasm_bytes: Some(wasm_bytes.clone()),
+            native_bytes: None,
+            source: source.clone(),
+        };
+
+        let native_bundle = FetchedBundle {
+            name: name.clone(),
+            version: version.clone(),
+            wasm_bytes: None,
+            native_bytes: Some(native_bytes.clone()),
+            source: source.clone(),
+        };
+
+        // Install both - we'll use wasm bundle as base and add native
+        let mut probe_params = HashMap::new();
+        probe_params.insert("allowed_hosts".to_string(), String::new());
+
+        let (mut final_name, mut final_ver, mut final_desc) = (
+            name.clone(),
+            version.clone().unwrap_or_else(|| "0.1.0".to_string()),
+            None,
+        );
+
+        // Probe WASM
+        if let Ok(mut instance) = WasmPluginInstance::load_from_bytes(
+            &name,
+            wasm_bytes.clone(),
+            probe_params.clone(),
+        ) {
+            if let Ok(info) = instance.get_info() {
+                final_name = if name.is_empty() { info.name } else { name.clone() };
+                final_ver = version.clone().unwrap_or(info.version);
+                final_desc = info.description;
+            }
+        }
+
+        sanitize_path_component(&final_name, "plugin name")?;
+        sanitize_path_component(&final_ver, "plugin version")?;
+
+        let plugins_dir = self.base_dir.join("plugins");
+        std::fs::create_dir_all(&plugins_dir)?;
+
+        let mut wasm_rel_path = None;
+        let mut sha256_hash = String::new();
+
+        if let Some(ref wasm_bytes) = wasm_bundle.wasm_bytes {
+            sha256_hash = Sha256::digest(wasm_bytes)
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect();
+
+            let file_name = format!("{}-{}.wasm", final_name, final_ver);
+            let dest = plugins_dir.join(&file_name);
+            std::fs::write(&dest, wasm_bytes)?;
+            wasm_rel_path = Some(format!("plugins/{}", file_name));
+        }
+
+        // Install native
+        let mut native_rel_path = None;
+        if let Some(ref native_bytes) = native_bundle.native_bytes {
+            if sha256_hash.is_empty() {
+                sha256_hash = Sha256::digest(native_bytes)
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+            }
+
+            let temp_dir_name = format!(".tmp-{}-{}", final_name, chrono_timestamp());
+            let temp_extract_dir = plugins_dir.join(&temp_dir_name);
+            std::fs::create_dir_all(&temp_extract_dir)?;
+
+            let extracted_binary = extract_archive_or_binary(native_bytes, &temp_extract_dir, &final_name)?;
+            set_executable_permissions(&extracted_binary)?;
+
+            if final_desc.is_none() {
+                if let Ok(mut sidecar) =
+                    NativeSidecar::new(&final_name, &extracted_binary, probe_params)
+                {
+                    if let Ok(info) = sidecar.get_info() {
+                        final_ver = native_bundle.version.clone().unwrap_or(info.version);
+                        final_desc = info.description;
+                    }
+                }
+            }
+
+            let bin_file_name = extracted_binary
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&final_name)
+                .to_string();
+
+            let final_bin_path = plugins_dir.join(&bin_file_name);
+            if final_bin_path.exists() {
+                let _ = std::fs::remove_file(&final_bin_path);
+            }
+
+            if std::fs::rename(&extracted_binary, &final_bin_path).is_err() {
+                std::fs::copy(&extracted_binary, &final_bin_path)?;
+                let _ = std::fs::remove_file(&extracted_binary);
+            }
+
+            set_executable_permissions(&final_bin_path)?;
+            let _ = std::fs::remove_dir_all(&temp_extract_dir);
+
+            native_rel_path = Some(format!("plugins/{}", bin_file_name));
+        }
+
+        // For dual install, we use wasm as primary since it's the common execution model
+        let execution_kind = ExecutionKind::Wasm;
+
+        let primary_binary_path = wasm_rel_path
+            .clone()
+            .ok_or_else(|| PackageError::InvalidSpec("WASM binary was not saved".to_string()))?;
+
+        let installed = InstalledPlugin {
+            name: final_name.clone(),
+            description: final_desc,
+            version: final_ver,
+            binary_path: primary_binary_path,
+            native_binary_path: native_rel_path,
+            execution_kind,
+            sha256: sha256_hash,
+            source: source.clone(),
+            default_params: HashMap::new(),
+        };
+
+        let mut lockfile = self.load_lockfile();
+        lockfile.plugins.insert(final_name.clone(), installed.clone());
+        self.save_lockfile(&lockfile)?;
+
+        println!("Installed '{}' (v{}, wasm+native)", installed.name, installed.version);
+
+        Ok(installed)
     }
 }
 
@@ -896,6 +1065,95 @@ fn collect_skill_files(dir: &Path, root: &Path, out: &mut Vec<SkillFile>) -> Res
         }
     }
     Ok(())
+}
+
+/// Scan a local path for both WASM and native binary variants
+/// Returns Some((wasm_path, native_path)) if both found with matching base names, None otherwise
+pub fn find_dual_binaries(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !path.exists() {
+        return None;
+    }
+
+    // If it's a single file, can't have dual binaries
+    if path.is_file() {
+        return None;
+    }
+
+    // If it's a directory, scan for both
+    let mut wasm_path = None;
+    let mut native_path = None;
+
+    for entry in std::fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|s| s.to_str())?;
+
+        // Look for .wasm files
+        if file_name.ends_with(".wasm") && path.is_file() {
+            wasm_path = Some(path);
+        }
+        // Look for native binaries (.exe on Windows, or any non-wasm file on other platforms)
+        else if (cfg!(windows) && file_name.ends_with(".exe"))
+            || (!cfg!(windows) && !file_name.ends_with(".wasm") && path.is_file())
+        {
+            native_path = Some(path);
+        }
+    }
+
+    Some((wasm_path?, native_path?))
+}
+
+/// Check if a target path indicates it might contain dual binaries
+/// (e.g., a directory, or a .zip/.tar.gz archive)
+fn can_contain_dual_binaries(target: &str) -> bool {
+    Path::new(target).is_dir()
+        || target.ends_with(".zip")
+        || target.ends_with(".tar.gz")
+        || target.ends_with(".tgz")
+}
+
+/// Check if we should do dual-binary auto-install
+/// Returns Some(path) if auto-dual-install should happen
+fn should_auto_dual_install(target: &str) -> Option<&Path> {
+    if can_contain_dual_binaries(target) {
+        let path = Path::new(target);
+        if let Some((wasm, native)) = find_dual_binaries(&path) {
+            // Verify they're actually compatible with flexible name matching
+            let wasm_base = wasm.file_stem().and_then(|s| s.to_str())?;
+            let native_stem = native.file_stem().and_then(|s| s.to_str())?;
+            
+            if names_match_flexible(wasm_base, native_stem) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// Flexible name matching that handles:
+/// - underscore vs dash normalization
+/// - optional "-native" suffix on native binaries
+/// - case-insensitive comparison
+fn names_match_flexible(name1: &str, name2: &str) -> bool {
+    // Normalize dashes to underscores for comparison
+    let n1 = name1.replace('-', "_");
+    let n2 = name2.replace('-', "_");
+    
+    // Check if they match directly (case-insensitive)
+    if n1.eq_ignore_ascii_case(&n2) {
+        return true;
+    }
+    
+    // Check if one has "-native" suffix (or "_native")
+    let (a, b) = (n1.as_str(), n2.as_str());
+    if a.ends_with("_native") && b.eq_ignore_ascii_case(&a[..a.len()-7]) {
+        return true;
+    }
+    if b.ends_with("_native") && a.eq_ignore_ascii_case(&b[..b.len()-7]) {
+        return true;
+    }
+    
+    false
 }
 
 pub fn current_target_triple() -> &'static str {

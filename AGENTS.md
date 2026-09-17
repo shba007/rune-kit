@@ -110,7 +110,7 @@ naming, module layout, commit style) — they are not yet verified.
   ```rust
   #[tokio::main]
   async fn main() {
-      library_main().await;
+      let _ = library_main().await;
   }
   ```
   `main()` returns `()`, not the library's `Result` — so the `Result` is
