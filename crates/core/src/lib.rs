@@ -6,7 +6,7 @@ pub mod runtime;
 pub use manifest::{
     ExecutionKind, InstalledPlugin, InstalledSkill, Lockfile, PluginUpdateStatus, PromptArgument,
     PromptDefinition, RegistryPluginSummary, RegistrySkillSummary, ResourceDefinition, SkillFile,
-    SkillLockfile, ToolDefinition,
+    SkillLockfile, SkillRow, ToolDefinition,
 };
 pub use package::{PackageError, PackageManager, SkillManager, is_newer_version};
 pub use protocol::McpRouter;

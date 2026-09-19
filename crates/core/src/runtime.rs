@@ -1,5 +1,5 @@
 use crate::manifest::{PluginInfo, PromptDefinition, ResourceDefinition, ToolDefinition};
-use extism::{Error as ExtismError, Manifest, PTR, Plugin, PluginBuilder, UserData, Wasm, host_fn};
+use extism::{Manifest, PTR, Plugin, PluginBuilder, UserData, Wasm, host_fn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -37,59 +37,29 @@ pub struct CmdExecResponse {
     pub stderr: String,
 }
 
-host_fn!(host_cmd_exec(input: String) -> String {
-    let req: CmdExecRequest = serde_json::from_str(&input)
-        .map_err(|e| ExtismError::msg(format!("Invalid command request payload: {}", e)))?;
-
+host_fn!(host_cmd_exec(input: String) -> Result<String, extism::Error> {
+    let req: CmdExecRequest = serde_json::from_str(&input).map_err(|e| extism::Error::msg(format!("Invalid JSON: {}", e)))?;
+    
     let mut prog_path = PathBuf::from(&req.program);
-
-    // Fallback search: Check plugins directory if not in PATH / not an absolute path
-    if !prog_path.is_absolute() && !prog_path.exists()
-        && let Some(data_dir) = dirs::data_dir() {
+    if !prog_path.is_absolute() && !prog_path.exists() {
+        if let Some(data_dir) = dirs::data_dir() {
             let plugins_dir = data_dir.join("rune-kit").join("plugins");
             let candidate = plugins_dir.join(&req.program);
             let candidate_exe = plugins_dir.join(format!("{}.exe", req.program));
-            if candidate.exists() {
-                prog_path = candidate;
-            } else if candidate_exe.exists() {
-                prog_path = candidate_exe;
-            }
-        }
-
-    let mut cmd = Command::new(&prog_path);
-    cmd.args(&req.args);
-
-    if let Some(cwd) = &req.cwd {
-        cmd.current_dir(cwd);
-    }
-
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-            let resp = CmdExecResponse {
-                success: output.status.success(),
-                exit_code: output.status.code(),
-                stdout,
-                stderr,
-            };
-            let json_str = serde_json::to_string(&resp)
-                .map_err(|e| ExtismError::msg(e.to_string()))?;
-            Ok(json_str)
-        }
-        Err(e) => {
-            let resp = CmdExecResponse {
-                success: false,
-                exit_code: None,
-                stdout: String::new(),
-                stderr: format!("Host binary '{}' failed or not found: {}", req.program, e),
-            };
-            let json_str = serde_json::to_string(&resp)
-                .map_err(|e| ExtismError::msg(e.to_string()))?;
-            Ok(json_str)
+            if candidate.exists() { prog_path = candidate; }
+            else if candidate_exe.exists() { prog_path = candidate_exe; }
         }
     }
+
+    let output = Command::new(&prog_path).args(&req.args).output().map_err(|e| extism::Error::msg(e.to_string()))?;
+
+    let resp = CmdExecResponse {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    };
+    Ok(serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string()))
 });
 
 pub struct WasmPluginInstance {
@@ -196,36 +166,23 @@ impl WasmPluginInstance {
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
-        let raw = self
-            .plugin
-            .call::<(), String>("mcp_list_resources", ())
-            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
-        Ok(serde_json::from_str(&raw)?)
+        // MCP plugins don't implement resources; always empty
+        Ok(Vec::new())
     }
 
-    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
-        let raw = self
-            .plugin
-            .call::<&str, String>("mcp_read_resource", uri)
-            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
-        Ok(serde_json::from_str(&raw)?)
+    pub fn read_resource(&mut self, _uri: &str) -> Result<Value, RuntimeError> {
+        // MCP plugins don't implement resources; always empty
+        Ok(Value::Null)
     }
 
     pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
-        let raw = self
-            .plugin
-            .call::<(), String>("mcp_list_prompts", ())
-            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
-        Ok(serde_json::from_str(&raw)?)
+        // MCP plugins don't implement prompts; always empty
+        Ok(Vec::new())
     }
 
-    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
-        let payload = json!({ "name": name, "arguments": arguments }).to_string();
-        let raw = self
-            .plugin
-            .call::<&str, String>("mcp_get_prompt", &payload)
-            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
-        Ok(serde_json::from_str(&raw)?)
+    pub fn get_prompt(&mut self, _name: &str, _arguments: Value) -> Result<Value, RuntimeError> {
+        // MCP plugins don't implement prompts; always empty
+        Ok(Value::Null)
     }
 }
 
@@ -434,56 +391,23 @@ impl NativeSidecar {
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
-        let resp = self.send_request("resources/list", json!({}))?;
-        if let Some(err) = resp.get("error") {
-            return Err(RuntimeError::Execution(format!(
-                "Sidecar resources/list error: {}",
-                err
-            )));
-        }
-        let res = resp.get("result").unwrap_or(&resp);
-        let resources_val = res.get("resources").unwrap_or(res);
-        Ok(serde_json::from_value(resources_val.clone())?)
+        // Native sidecars don't implement resources; always empty
+        Ok(Vec::new())
     }
 
-    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
-        let resp = self.send_request("resources/read", json!({ "uri": uri }))?;
-        if let Some(err) = resp.get("error") {
-            let msg = err
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown sidecar resource error");
-            return Err(RuntimeError::Execution(msg.to_string()));
-        }
-        Ok(resp.get("result").unwrap_or(&resp).clone())
+    pub fn read_resource(&mut self, _uri: &str) -> Result<Value, RuntimeError> {
+        // Native sidecars don't implement resources; always empty
+        Ok(Value::Null)
     }
 
     pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
-        let resp = self.send_request("prompts/list", json!({}))?;
-        if let Some(err) = resp.get("error") {
-            return Err(RuntimeError::Execution(format!(
-                "Sidecar prompts/list error: {}",
-                err
-            )));
-        }
-        let res = resp.get("result").unwrap_or(&resp);
-        let prompts_val = res.get("prompts").unwrap_or(res);
-        Ok(serde_json::from_value(prompts_val.clone())?)
+        // Native sidecars don't implement prompts; always empty
+        Ok(Vec::new())
     }
 
-    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
-        let resp = self.send_request(
-            "prompts/get",
-            json!({ "name": name, "arguments": arguments }),
-        )?;
-        if let Some(err) = resp.get("error") {
-            let msg = err
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown sidecar prompt error");
-            return Err(RuntimeError::Execution(msg.to_string()));
-        }
-        Ok(resp.get("result").unwrap_or(&resp).clone())
+    pub fn get_prompt(&mut self, _name: &str, _arguments: Value) -> Result<Value, RuntimeError> {
+        // Native sidecars don't implement prompts; always empty
+        Ok(Value::Null)
     }
 }
 

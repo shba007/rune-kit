@@ -1,6 +1,4 @@
-use rune_kit_core::{
-    InstalledSkill, Lockfile, PluginUpdateStatus, RegistryPluginSummary, RegistrySkillSummary,
-};
+use rune_kit_core::{Lockfile, PluginUpdateStatus, SkillRow};
 
 pub struct Column {
     pub name: &'static str,
@@ -128,36 +126,6 @@ pub fn truncate_display(s: &str, max_chars: usize) -> String {
     truncated
 }
 
-pub fn render_registry_table(plugins: &[RegistryPluginSummary], lockfile: &Lockfile) -> Table {
-    let mut t = Table::new(88)
-        .column(Column::fixed("NAME", 20))
-        .column(Column::fixed("CURRENT", 10))
-        .column(Column::fixed("LATEST", 10))
-        .column(Column::fixed("BUILDS", 14))
-        .column(Column::flexible("DESCRIPTION", 30));
-    for p in plugins {
-        let builds = match (p.has_wasm, p.has_native) {
-            (true, true) => "wasm, native",
-            (true, false) => "wasm",
-            (false, true) => "native",
-            (false, false) => "-",
-        };
-        let current = lockfile
-            .plugins
-            .get(&p.name)
-            .map(|e| e.version.as_str())
-            .unwrap_or("-");
-        t.add_row(vec![
-            p.name.clone(),
-            current.to_string(),
-            p.latest.clone(),
-            builds.to_string(),
-            p.description.clone().unwrap_or_else(|| "-".to_string()),
-        ]);
-    }
-    t
-}
-
 pub fn render_update_status_table(statuses: &[PluginUpdateStatus]) -> Table {
     let mut t = Table::new(70)
         .column(Column::fixed("PLUGIN", 16))
@@ -216,45 +184,6 @@ pub fn render_list_table(lockfile: &Lockfile) -> Table {
         ]);
     }
     t
-}
-
-/// Minimal shape shared by installed and registry skill rows so a single table
-/// renderer serves both the installed view and the remote-registry view.
-pub trait SkillRow {
-    fn name(&self) -> &str;
-    fn version(&self) -> &str;
-    fn description(&self) -> Option<&str>;
-    fn author(&self) -> Option<&str>;
-}
-
-impl SkillRow for InstalledSkill {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn version(&self) -> &str {
-        &self.version
-    }
-    fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-    fn author(&self) -> Option<&str> {
-        self.author.as_deref()
-    }
-}
-
-impl SkillRow for RegistrySkillSummary {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn version(&self) -> &str {
-        &self.latest
-    }
-    fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-    fn author(&self) -> Option<&str> {
-        self.author.as_deref()
-    }
 }
 
 /// Skills are content, not code — so the table shows NAME/VERSION/AUTHOR/DESCRIPTION

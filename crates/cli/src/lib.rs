@@ -21,20 +21,13 @@ pub enum Commands {
         param: Vec<(String, String)>,
     },
     /// Install an artifact from registry, URL, or local path
-    ///
-    /// For plugins (MCP tools): uses WASM or native sidecar execution model
-    /// For skills (content): standalone documentation artifacts that guide tool use
     Install {
         target: String,
         #[arg(short, long)]
         version: Option<String>,
-        #[arg(long)]
-        #[arg(hide = true)]
-        _reserved_for_future: bool,
     },
     /// Uninstall an installed artifact (plugin or skill)
     Uninstall {
-        #[arg(value_parser = parse_uninstall_name)]
         name: String,
     },
     /// List installed artifacts (plugins and skills)
@@ -54,9 +47,6 @@ pub enum Commands {
         /// Check for available updates without downloading
         #[arg(short, long)]
         check: bool,
-        #[arg(long)]
-        #[arg(hide = true)]
-        _reserved_for_future: bool,
     },
     /// Self-update the rune CLI binary to the latest release
     SelfUpdate {
@@ -79,10 +69,6 @@ struct SearchResult {
     name: String,
     latest: String,
     description: String,
-}
-
-fn parse_uninstall_name(s: &str) -> Result<String, String> {
-    Ok(s.to_string())
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
@@ -172,7 +158,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Install {
             target,
             version,
-            _reserved_for_future,
         } => {
             // Detect if target is a skill or plugin
             let is_skill = target.ends_with(".md")
@@ -406,7 +391,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Update {
             names,
             check,
-            _reserved_for_future,
         } => {
             let filter = if names.is_empty() {
                 None

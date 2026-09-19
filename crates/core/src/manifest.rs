@@ -111,6 +111,44 @@ pub struct InstalledSkill {
     pub files: Vec<SkillFile>,
 }
 
+/// Traits for skill table rendering
+pub trait SkillRow {
+    fn name(&self) -> &str;
+    fn version(&self) -> &str;
+    fn description(&self) -> Option<&str>;
+    fn author(&self) -> Option<&str>;
+}
+
+impl SkillRow for InstalledSkill {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+}
+
+impl SkillRow for RegistrySkillSummary {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn version(&self) -> &str {
+        &self.latest
+    }
+    fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    fn author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillFile {
     pub path: String,

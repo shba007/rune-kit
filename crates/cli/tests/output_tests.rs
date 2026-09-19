@@ -1,4 +1,4 @@
-use rune_kit_cli::output::{render_list_table, render_registry_table, render_update_status_table};
+use rune_kit_cli::output::{render_list_table, render_update_status_table};
 use rune_kit_core::{ExecutionKind, InstalledPlugin, Lockfile};
 use std::collections::HashMap;
 
@@ -25,13 +25,13 @@ fn sample_lockfile() -> Lockfile {
 }
 
 #[test]
-fn registry_table_header_matches_layout() {
-    let rows = render_registry_table(&[], &sample_lockfile()).format_rows();
+fn list_table_header_matches_layout() {
+    let rows = render_list_table(&sample_lockfile()).format_rows();
     assert_eq!(
         rows[0],
         format!(
-            "{:<20} {:<10} {:<10} {:<14} {:<30}",
-            "NAME", "CURRENT", "LATEST", "BUILDS", "DESCRIPTION"
+            "{:<14} {:<10} {:<8} {:<34} {:<14}",
+            "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE"
         )
     );
 }
@@ -44,18 +44,6 @@ fn update_table_header_matches_layout() {
         format!(
             "{:<16} {:<12} {:<12} {:<14} {:<12}",
             "PLUGIN", "CURRENT", "LATEST", "STATUS", "BUILDS"
-        )
-    );
-}
-
-#[test]
-fn list_table_header_matches_layout() {
-    let rows = render_list_table(&sample_lockfile()).format_rows();
-    assert_eq!(
-        rows[0],
-        format!(
-            "{:<14} {:<10} {:<8} {:<34} {:<14}",
-            "NAME", "VERSION", "BUILDS", "DESCRIPTION", "SOURCE"
         )
     );
 }
