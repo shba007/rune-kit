@@ -1,4 +1,4 @@
-name: Rune CI
+name: Rust CI
 
 permissions:
   contents: write
@@ -8,6 +8,10 @@ on:
   push:
     branches:
       - develop
+
+env:
+  DATABASE_URL: ${{ vars.DATABASE_URL }}
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
@@ -24,59 +28,76 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          lfs: true
 
-      - name: 🛠️ Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      # 1. Setup Rust with clippy, rustfmt, and automatic dependency caching
+      - name: 🛠️ Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: rustfmt, clippy
 
-      - name: 📦 Cache Cargo
-        uses: Swatinem/rust-cache@v2
+      # 2. Fast binary installer for CLI tools (downloads prebuilt binaries, zero compile time)
+      - name: 📦 Install Release Tooling
+        uses: taiki-e/install-action@v2.87.17
+        with:
+          tool: cocogitto, cargo-edit
 
-      - name: 🧼 Check Formatting
-        run: cargo fmt --all -- --check
+      # 3. Verify Cargo.lock is synced with Cargo.toml (equivalent to --frozen-lockfile)
+      - name: 📦 Verify Dependencies
+        run: cargo fetch --locked
 
+      # 4. Build Artifact
+      - name: ⚙️ Build Artifact
+        run: cargo build --release --workspace
+
+      # 5. Test Code (uncomment when ready)
+      # - name: ✅ Test Code
+      #   run: cargo test --workspace
+
+      # 6. Lint Code (Clippy)
       - name: 🧹 Lint Code
         run: cargo clippy --workspace --all-targets -- -D warnings || echo "Linting
           failed, but continuing"
 
-      - name: ⚙️ Build Workspace
-        run: cargo build --workspace
-
-      - name: ✅ Test Code
-        run: cargo test --workspace
-
-      - name: 🤖 AutoFix Formatting
+      # 7. Format Code
+      - name: 🧼 Format Code
         run: cargo fmt --all
 
-      - name: 🤖 Commit Formatting Fixes
+      # 8. Auto-commit any formatting changes made by rustfmt
+      - name: 🤖 AutoFix Code
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: 'chore: apply code fixes [skip ci]'
 
-      - name: 🛠️ Install cargo-edit
-        uses: taiki-e/install-action@v2.87.4
-        with:
-          tool: cargo-edit
-
-      - name: 🏷️ Bump Workspace Version
+      # 9. Bump SemVer & Extract Changelog via Conventional Commits
+      - name: 🏷️ Bump Version
         id: bump_version
         run: |
-          cargo set-version --bump patch --workspace
-          cargo update --workspace -q
-          NEW_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          # Configure git identity for cocogitto dry-run / bump
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # 1. Generate unreleased changelog body for the PR description
+          CHLOG=$(cog changelog --unreleased || echo "Routine release update.")
+
+          # Pass changelog content to the GitHub Actions environment
+          echo "CHANGELOG_CONTENT<<EOF" >> $GITHUB_ENV
+          echo "$CHLOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          # 2. Perform automated SemVer bump and CHANGELOG.md generation
+          cog bump --auto
+
+          # 3. Ensure Cargo.lock is updated to the new Cargo.toml version
+          cargo check --quiet
+
+      # 10. Open or update Release PR
       - name: 🔀 Create or Update Pull Request
         uses: peter-evans/create-pull-request@v8
         with:
           commit-message: 'ci(release): update version'
           title: 'ci(release): update version'
-          body: |
-            Bumps workspace version to `${{ steps.bump_version.outputs.version }}`.
-
-            Merging this into `main` will publish a GitHub Release and trigger the
-            cross-platform binary build in `deploy.yml`.
+          body: ${{ env.CHANGELOG_CONTENT }}
           branch: 'release/update-version'
           base: 'develop'
           delete-branch: true

@@ -1,0 +1,22 @@
+# lefthook.yml
+
+pre-commit:
+  parallel: false
+  commands:
+    # 1. Scan staged files with gitleaks if installed
+    gitleaks:
+      runner: bash -c
+      run: 'command -v gitleaks >/dev/null 2>&1 && gitleaks detect --no-git --no-banner --verbose || true'
+
+    rustfmt:
+      glob: '*.rs'
+      run: rustfmt --edition 2024 {staged_files}
+      stage_fixed: true
+
+    clippy:
+      run: cargo clippy --workspace --all-targets
+
+commit-msg:
+  commands:
+    conventional-commits:
+      run: cog verify --file {1}

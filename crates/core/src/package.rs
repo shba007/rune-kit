@@ -413,12 +413,15 @@ impl PackageManager {
 
         for (dep_name, dep_spec) in &manifest.dependencies.binaries {
             if !dep_spec.optional {
-                let _ = self.provisioner.provision_binary(dep_name, dep_spec).await?;
+                let _ = self
+                    .provisioner
+                    .provision_binary(dep_name, dep_spec)
+                    .await?;
             }
         }
 
         let mut probe_params: HashMap<String, String> = std::env::vars().collect();
-        probe_params.entry("allowed_hosts".to_string()).or_insert_with(String::new);
+        probe_params.entry("allowed_hosts".to_string()).or_default();
 
         let (mut final_name, mut final_ver, mut final_desc) = (
             bundle.name.clone(),
@@ -472,8 +475,7 @@ impl PackageManager {
             let temp_dir = plugins_dir.join(format!(".tmp-native-{}", chrono_timestamp()));
             std::fs::create_dir_all(&temp_dir)?;
 
-            let extracted_binary =
-                extract_archive_or_binary(native_bytes, &temp_dir, &final_name)?;
+            let extracted_binary = extract_archive_or_binary(native_bytes, &temp_dir, &final_name)?;
             set_executable_permissions(&extracted_binary)?;
 
             if final_desc.is_none()
