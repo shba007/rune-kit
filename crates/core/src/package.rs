@@ -417,8 +417,8 @@ impl PackageManager {
             }
         }
 
-        let mut probe_params = HashMap::new();
-        probe_params.insert("allowed_hosts".to_string(), String::new());
+        let mut probe_params: HashMap<String, String> = std::env::vars().collect();
+        probe_params.entry("allowed_hosts".to_string()).or_insert_with(String::new);
 
         let (mut final_name, mut final_ver, mut final_desc) = (
             bundle.name.clone(),
@@ -1070,7 +1070,7 @@ fn extract_archive_or_binary(
     if bytes.starts_with(b"PK\x03\x04") {
         let reader = Cursor::new(bytes);
         let mut zip = zip::ZipArchive::new(reader)
-            .map_err(|e| PackageError::InvalidSpec(format!("Failed to read zip archive: {}", e)))?;
+            .map_err(|e| PackageError::InvalidSpec(format!("Zip read error: {}", e)))?;
 
         for i in 0..zip.len() {
             let mut file = zip

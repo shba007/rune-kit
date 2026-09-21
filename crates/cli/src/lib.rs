@@ -501,9 +501,5 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn resolve_host_env_params() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for (k, v) in std::env::vars() {
-        map.insert(k.to_ascii_lowercase(), v);
-    }
-    map
+    std::env::vars().collect()
 }

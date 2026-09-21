@@ -35,6 +35,7 @@ pub struct HostContext {
     pub plugins_dir: PathBuf,
     pub provisioner: BinaryProvisioner,
     pub sidecar: Arc<Mutex<Option<NativeSidecar>>>,
+    pub params: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,6 +100,7 @@ host_fn!(host_cmd_exec(user_data: HostContext; input: String) -> Result<String, 
 
     let mut cmd = Command::new(&prog_path);
     cmd.args(&req.args);
+    cmd.envs(&ctx.params);
     if let Some(ref cwd) = req.cwd {
         cmd.current_dir(cwd);
     }
@@ -145,7 +147,7 @@ host_fn!(host_sidecar_exec(user_data: HostContext; input: String) -> Result<Stri
             )));
         }
 
-        let sidecar = NativeSidecar::new(&ctx.plugin_name, &sidecar_path, HashMap::new())
+        let sidecar = NativeSidecar::new(&ctx.plugin_name, &sidecar_path, ctx.params.clone())
             .map_err(|e| extism::Error::msg(format!("Failed to spawn companion sidecar: {}", e)))?;
         *sidecar_lock = Some(sidecar);
     }
@@ -229,8 +231,17 @@ impl WasmPluginInstance {
     ) -> Result<Self, RuntimeError> {
         let mut extism_manifest = Manifest::new([Wasm::data(bytes)]);
 
+        let get_param = |key: &str| -> Option<String> {
+            params.get(key).cloned().or_else(|| {
+                params
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    .map(|(_, v)| v.clone())
+            })
+        };
+
         let mut allowed_hosts: Vec<String> = manifest.capabilities.network_hosts.clone();
-        if let Some(param_hosts) = params.get("allowed_hosts") {
+        if let Some(param_hosts) = get_param("allowed_hosts") {
             for h in param_hosts.split(',').map(str::trim).filter(|h| !h.is_empty()) {
                 allowed_hosts.push(h.to_string());
             }
@@ -244,22 +255,22 @@ impl WasmPluginInstance {
             }
         }
 
-        if let Some(printer_ip) = params.get("printer_ip").filter(|s| !s.is_empty()) {
-            extism_manifest = extism_manifest.with_allowed_host(printer_ip.clone());
+        if let Some(printer_ip) = get_param("printer_ip").filter(|s| !s.is_empty()) {
+            extism_manifest = extism_manifest.with_allowed_host(printer_ip);
         }
 
         if let Some(ref fs) = manifest.capabilities.filesystem
             && let Some(ref param_key) = fs.root_param
-            && let Some(root_path) = params.get(param_key)
+            && let Some(root_path) = get_param(param_key)
         {
-            extism_manifest = extism_manifest.with_allowed_path(root_path.clone(), root_path.clone());
-        } else if let Some(allowed_dir) = params.get("allowed_dir") {
-            extism_manifest = extism_manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
+            extism_manifest = extism_manifest.with_allowed_path(root_path.clone(), root_path);
+        } else if let Some(allowed_dir) = get_param("allowed_dir") {
+            extism_manifest = extism_manifest.with_allowed_path(allowed_dir.clone(), allowed_dir);
         } else {
             extism_manifest = extism_manifest.with_allowed_path(".".to_string(), ".");
         }
 
-        let extism_manifest = extism_manifest.with_config(params.into_iter());
+        let extism_manifest = extism_manifest.with_config(params.clone().into_iter());
 
         let plugins_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -272,6 +283,7 @@ impl WasmPluginInstance {
             plugins_dir,
             provisioner: BinaryProvisioner::new(),
             sidecar: Arc::new(Mutex::new(None)),
+            params,
         };
 
         let plugin = PluginBuilder::new(extism_manifest)
