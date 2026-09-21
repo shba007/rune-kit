@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file. See [conven
 - - -
 ## 0.1.0 - 2026-09-21
 #### Features
+- (**cli**) support host env vars for plugin config and bump to 0.1.1 - (61c818d) - Shirsendu Bairagi
+- enhance target triple detection for cross-platform compatibility - (386611e) - Shirsendu Bairagi
+- update CI workflow and add pre-commit hooks for code quality checks - (0dd707a) - Shirsendu Bairagi
+- enhance package management with binary provisioning and manifest support - (4346e4a) - Shirsendu Bairagi
+- implement protocol handling and runtime plugin management - (ae056cd) - Shirsendu Bairagi
+- add dual binary installation support for plugins, including detection and installation of both WASM and native binaries - (0320464) - Shirsendu Bairagi
+- implement skill management with installation, uninstallation, and update functionalities, including registry integration and unified output rendering - (91538f7) - Shirsendu Bairagi
+- enhance CLI and core functionality with resource and prompt management, including URI parsing and new data structures - (57b94d3) - Shirsendu Bairagi
+- restructure CLI by separating main logic into library and enhancing output rendering functions - (bd42ebf) - Shirsendu Bairagi
+- implement Column and Table structures for output formatting - (9d9a96a) - Shirsendu Bairagi
+- add detailed documentation for agents, architecture, and usage in README and AGENTS.md - (3b38966) - Shirsendu Bairagi
+- add commands for listing available tools and searching registry; enhance update functionality - (4314369) - Shirsendu Bairagi
+- enhance JSON-RPC response structure with error handling and content formatting - (fdf192b) - Shirsendu Bairagi
+- enhance plugin management with native execution support - (c0ab4c3) - Shirsendu Bairagi
+- add video metadata inspection tool and update mcp.json for new commands - (143f9d7) - Shirsendu Bairagi
+- add sequential thinking functionality and update README and mcp.json - (1ae505a) - Shirsendu Bairagi
+- add rune-memory functionality with entity creation and graph reading - (e30fc6f) - Shirsendu Bairagi
+- add git execution functionality and update mcp.json for rune-git command - (68b4c9e) - Shirsendu Bairagi
+- add test prompts and CLI configuration to README and introduce mcp.json for server commands - (44814c6) - Shirsendu Bairagi
+- enhance plugin management with metadata support and update README - (42c2129) - Shirsendu Bairagi
+- add README, and enhance protocol handling - (5342a6a) - Shirsendu Bairagi
+- initialize rune-kit workspace with core and CLI crates - (993ad33) - Shirsendu Bairagi
+#### Bug Fixes
+- update installation instructions in README for clarity - (8005228) - Shirsendu Bairagi
+- update deploy and integrate workflows for improved artifact handling and linting - (2bd8a9f) - Shirsendu Bairagi
+#### Continuous Integration
+- (**release**) update version - (1d388b8) - Shirsendu Bairagi
+- (**release**) update version - (698cda1) - Shirsendu Bairagi
+- (**release**) update version - (d46d471) - shba007
+- (**release**) update version - (6492c77) - Shirsendu Bairagi
+- (**release**) update version - (1327484) - shba007
+- (**release**) update version - (a0aa8c4) - Shirsendu Bairagi
+- (**release**) update version - (891af35) - shba007
+- (**release**) update version - (6f1e6dc) - Shirsendu Bairagi
+- (**release**) update version - (eb4b02f) - shba007
+- add release pipeline and harden plugin installation - (396203c) - Shirsendu Bairagi
+#### Refactoring
+- (**cli**) inject all host env vars as lowercase plugin params - (e918816) - Shirsendu Bairagi
+- simplify environment variable handling and improve parameter management in runtime - (8f54e5e) - Shirsendu Bairagi
+- streamline command handling and improve error reporting in CLI - (e611785) - Shirsendu Bairagi
+- improve code readability by adjusting conditional formatting and removing unnecessary line breaks - (8191dd3) - Shirsendu Bairagi
+- wire registry/update/List render paths onto Table/Column - (5f1409b) - Shirsendu Bairagi
+- clean up project structure by removing unused mcp.json configuration file - (422c65c) - Shirsendu Bairagi
+#### Miscellaneous Chores
+- (**version**) bump package version to 0.2.0 - (8d65220) - Shirsendu Bairagi
+- (**version**) 0.1.0 - (c8f2b38) - github-actions[bot]
+- apply code fixes [skip ci] - (340be1c) - shba007
+
+- - -
+
+## 0.1.0 - 2026-09-21
+#### Features
 - enhance target triple detection for cross-platform compatibility - (386611e) - Shirsendu Bairagi
 #### Miscellaneous Chores
 - apply code fixes [skip ci] - (340be1c) - shba007
