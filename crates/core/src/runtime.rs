@@ -1,4 +1,7 @@
-use crate::manifest::{PluginInfo, PromptDefinition, ResourceDefinition, ToolDefinition};
+use crate::manifest::{
+    PluginInfo, PluginManifest, PromptDefinition, ResourceDefinition, ToolDefinition,
+};
+use crate::provision::{BinaryProvisioner, ProvisionError};
 use extism::{Manifest, PTR, Plugin, PluginBuilder, UserData, Wasm, host_fn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -6,6 +9,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -20,6 +24,17 @@ pub enum RuntimeError {
     Json(#[from] serde_json::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Provision error: {0}")]
+    Provision(#[from] ProvisionError),
+}
+
+#[derive(Clone)]
+pub struct HostContext {
+    pub plugin_name: String,
+    pub allowed_binaries: Vec<String>,
+    pub plugins_dir: PathBuf,
+    pub provisioner: BinaryProvisioner,
+    pub sidecar: Arc<Mutex<Option<NativeSidecar>>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,21 +52,58 @@ pub struct CmdExecResponse {
     pub stderr: String,
 }
 
-host_fn!(host_cmd_exec(input: String) -> Result<String, extism::Error> {
-    let req: CmdExecRequest = serde_json::from_str(&input).map_err(|e| extism::Error::msg(format!("Invalid JSON: {}", e)))?;
-    
+#[derive(Serialize, Deserialize)]
+pub struct SidecarExecRequest {
+    pub method: String,
+    pub params: Value,
+}
+
+host_fn!(host_cmd_exec(user_data: HostContext; input: String) -> Result<String, extism::Error> {
+    let data = user_data.get()?;
+    let ctx = data
+        .lock()
+        .map_err(|_| extism::Error::msg("Failed to lock host context"))?;
+
+    let req: CmdExecRequest = serde_json::from_str(&input)
+        .map_err(|e| extism::Error::msg(format!("Invalid JSON in host_cmd_exec: {}", e)))?;
+
+    if !ctx.allowed_binaries.iter().any(|b| b == &req.program) {
+        let resp = CmdExecResponse {
+            success: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: format!("Unauthorized execution: '{}' is not in capabilities.exec.allowed_binaries", req.program),
+        };
+        return Ok(serde_json::to_string(&resp)?);
+    }
+
     let mut prog_path = PathBuf::from(&req.program);
-    if !prog_path.is_absolute() && !prog_path.exists() {
-        if let Some(data_dir) = dirs::data_dir() {
-            let plugins_dir = data_dir.join("rune-kit").join("plugins");
-            let candidate = plugins_dir.join(&req.program);
-            let candidate_exe = plugins_dir.join(format!("{}.exe", req.program));
-            if candidate.exists() { prog_path = candidate; }
-            else if candidate_exe.exists() { prog_path = candidate_exe; }
+    if !prog_path.is_absolute() {
+        let candidate_sidecar = ctx.plugins_dir.join(format!("rune-{}-native", req.program));
+        let candidate_sidecar_exe = ctx.plugins_dir.join(format!("rune-{}-native.exe", req.program));
+        let candidate = ctx.plugins_dir.join(&req.program);
+        let candidate_exe = ctx.plugins_dir.join(format!("{}.exe", req.program));
+
+        if candidate_sidecar.exists() {
+            prog_path = candidate_sidecar;
+        } else if candidate_sidecar_exe.exists() {
+            prog_path = candidate_sidecar_exe;
+        } else if candidate.exists() {
+            prog_path = candidate;
+        } else if candidate_exe.exists() {
+            prog_path = candidate_exe;
+        } else if let Ok(prov_path) = ctx.provisioner.resolve_binary(&req.program, &ctx.allowed_binaries) {
+            prog_path = prov_path;
         }
     }
 
-    let output = Command::new(&prog_path).args(&req.args).output().map_err(|e| extism::Error::msg(e.to_string()))?;
+    let mut cmd = Command::new(&prog_path);
+    cmd.args(&req.args);
+    if let Some(ref cwd) = req.cwd {
+        cmd.current_dir(cwd);
+    }
+
+    let output = cmd.output().map_err(|e| extism::Error::msg(format!("Execution failed: {}", e)))?;
 
     let resp = CmdExecResponse {
         success: output.status.success(),
@@ -59,12 +111,90 @@ host_fn!(host_cmd_exec(input: String) -> Result<String, extism::Error> {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     };
-    Ok(serde_json::to_string(&resp).unwrap_or_else(|_| "{}".to_string()))
+    Ok(serde_json::to_string(&resp)?)
+});
+
+host_fn!(host_sidecar_exec(user_data: HostContext; input: String) -> Result<String, extism::Error> {
+    let data = user_data.get()?;
+    let ctx = data
+        .lock()
+        .map_err(|_| extism::Error::msg("Failed to lock host context"))?;
+
+    let req: SidecarExecRequest = serde_json::from_str(&input)
+        .map_err(|e| extism::Error::msg(format!("Invalid JSON in host_sidecar_exec: {}", e)))?;
+
+    let mut sidecar_lock = ctx
+        .sidecar
+        .lock()
+        .map_err(|_| extism::Error::msg("Failed to lock sidecar mutex"))?;
+
+    if sidecar_lock.is_none() {
+        let sidecar_name = format!("rune-{}-native", ctx.plugin_name);
+        let mut sidecar_path = ctx.plugins_dir.join(&sidecar_name);
+        if !sidecar_path.exists() {
+            sidecar_path = ctx.plugins_dir.join(format!("{}.exe", sidecar_name));
+        }
+        if !sidecar_path.exists() {
+            sidecar_path = ctx.plugins_dir.join(&ctx.plugin_name);
+        }
+
+        if !sidecar_path.exists() {
+            return Err(extism::Error::msg(format!(
+                "Companion native sidecar '{}' not found in plugin directory",
+                sidecar_name
+            )));
+        }
+
+        let sidecar = NativeSidecar::new(&ctx.plugin_name, &sidecar_path, HashMap::new())
+            .map_err(|e| extism::Error::msg(format!("Failed to spawn companion sidecar: {}", e)))?;
+        *sidecar_lock = Some(sidecar);
+    }
+
+    let sidecar = sidecar_lock.as_mut().unwrap();
+    let res = sidecar
+        .send_request(&req.method, req.params)
+        .map_err(|e| extism::Error::msg(format!("Companion sidecar IPC error: {}", e)))?;
+
+    Ok(serde_json::to_string(&res)?)
+});
+
+host_fn!(host_get_binary_path(user_data: HostContext; input: String) -> Result<String, extism::Error> {
+    let data = user_data.get()?;
+    let ctx = data
+        .lock()
+        .map_err(|_| extism::Error::msg("Failed to lock host context"))?;
+
+    let bin_name = input.trim().trim_matches('"');
+
+    match ctx.provisioner.resolve_binary(bin_name, &ctx.allowed_binaries) {
+        Ok(path) => {
+            let res = json!({
+                "status": "ok",
+                "path": path.to_string_lossy().to_string()
+            });
+            Ok(serde_json::to_string(&res)?)
+        }
+        Err(ProvisionError::InProgress { progress_percent, eta_seconds, .. }) => {
+            let res = json!({
+                "status": "error",
+                "error": format!("{} is currently being provisioned ({}% downloaded). Please retry in {} seconds.", bin_name, progress_percent, eta_seconds)
+            });
+            Ok(serde_json::to_string(&res)?)
+        }
+        Err(err) => {
+            let res = json!({
+                "status": "error",
+                "error": err.to_string()
+            });
+            Ok(serde_json::to_string(&res)?)
+        }
+    }
 });
 
 pub struct WasmPluginInstance {
     plugin: Plugin,
     pub name: String,
+    pub manifest: PluginManifest,
 }
 
 impl WasmPluginInstance {
@@ -77,48 +207,95 @@ impl WasmPluginInstance {
         let wasm_bytes = std::fs::read(path_ref)
             .map_err(|_| RuntimeError::FileNotFound(path_ref.display().to_string()))?;
 
-        Self::load_from_bytes(name, wasm_bytes, params)
+        let manifest = if let Some(parent) = path_ref.parent() {
+            let manifest_path = parent.join("plugin.toml");
+            if manifest_path.exists() {
+                PluginManifest::from_file(&manifest_path).unwrap_or_default()
+            } else {
+                PluginManifest::default()
+            }
+        } else {
+            PluginManifest::default()
+        };
+
+        Self::load_from_bytes(name, wasm_bytes, params, manifest)
     }
 
     pub fn load_from_bytes(
         name: &str,
         bytes: Vec<u8>,
         params: HashMap<String, String>,
+        manifest: PluginManifest,
     ) -> Result<Self, RuntimeError> {
-        let mut manifest = Manifest::new([Wasm::data(bytes)]);
+        let mut extism_manifest = Manifest::new([Wasm::data(bytes)]);
 
-        if let Some(allowed_hosts) = params.get("allowed_hosts") {
-            for host in allowed_hosts
-                .split(',')
-                .map(str::trim)
-                .filter(|h| !h.is_empty())
-            {
-                manifest = manifest.with_allowed_host(host.to_string());
+        let mut allowed_hosts: Vec<String> = manifest.capabilities.network_hosts.clone();
+        if let Some(param_hosts) = params.get("allowed_hosts") {
+            for h in param_hosts.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+                allowed_hosts.push(h.to_string());
             }
+        }
+
+        if allowed_hosts.is_empty() {
+            extism_manifest = extism_manifest.with_allowed_host("*".to_string());
         } else {
-            manifest = manifest.with_allowed_host("*".to_string());
+            for host in allowed_hosts {
+                extism_manifest = extism_manifest.with_allowed_host(host);
+            }
         }
 
         if let Some(printer_ip) = params.get("printer_ip").filter(|s| !s.is_empty()) {
-            manifest = manifest.with_allowed_host(printer_ip.clone());
+            extism_manifest = extism_manifest.with_allowed_host(printer_ip.clone());
         }
 
-        if let Some(allowed_dir) = params.get("allowed_dir") {
-            manifest = manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
+        if let Some(ref fs) = manifest.capabilities.filesystem
+            && let Some(ref param_key) = fs.root_param
+            && let Some(root_path) = params.get(param_key)
+        {
+            extism_manifest = extism_manifest.with_allowed_path(root_path.clone(), root_path.clone());
+        } else if let Some(allowed_dir) = params.get("allowed_dir") {
+            extism_manifest = extism_manifest.with_allowed_path(allowed_dir.clone(), allowed_dir.clone());
         } else {
-            manifest = manifest.with_allowed_path(".".to_string(), ".");
+            extism_manifest = extism_manifest.with_allowed_path(".".to_string(), ".");
         }
 
-        let manifest = manifest.with_config(params.into_iter());
+        let extism_manifest = extism_manifest.with_config(params.into_iter());
 
-        let plugin = PluginBuilder::new(manifest)
+        let plugins_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rune-kit")
+            .join("plugins");
+
+        let host_ctx = HostContext {
+            plugin_name: name.to_string(),
+            allowed_binaries: manifest.capabilities.exec.allowed_binaries.clone(),
+            plugins_dir,
+            provisioner: BinaryProvisioner::new(),
+            sidecar: Arc::new(Mutex::new(None)),
+        };
+
+        let plugin = PluginBuilder::new(extism_manifest)
             .with_wasi(true)
             .with_function(
                 "host_cmd_exec",
                 [PTR],
                 [PTR],
-                UserData::new(()),
+                UserData::new(host_ctx.clone()),
                 host_cmd_exec,
+            )
+            .with_function(
+                "host_sidecar_exec",
+                [PTR],
+                [PTR],
+                UserData::new(host_ctx.clone()),
+                host_sidecar_exec,
+            )
+            .with_function(
+                "host_get_binary_path",
+                [PTR],
+                [PTR],
+                UserData::new(host_ctx),
+                host_get_binary_path,
             )
             .build()
             .map_err(|e| RuntimeError::ExtismInit(e.to_string()))?;
@@ -126,6 +303,7 @@ impl WasmPluginInstance {
         Ok(Self {
             plugin,
             name: name.to_string(),
+            manifest,
         })
     }
 
@@ -166,23 +344,49 @@ impl WasmPluginInstance {
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
-        // MCP plugins don't implement resources; always empty
-        Ok(Vec::new())
+        match self.plugin.call::<(), String>("mcp_list_resources", ()) {
+            Ok(raw) => {
+                let resources: Vec<ResourceDefinition> = serde_json::from_str(&raw)?;
+                Ok(resources)
+            }
+            Err(_) => Ok(Vec::new()),
+        }
     }
 
-    pub fn read_resource(&mut self, _uri: &str) -> Result<Value, RuntimeError> {
-        // MCP plugins don't implement resources; always empty
-        Ok(Value::Null)
+    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
+        match self.plugin.call::<&str, String>("mcp_read_resource", uri) {
+            Ok(raw) => {
+                let val: Value = serde_json::from_str(&raw)?;
+                Ok(val)
+            }
+            Err(_) => Ok(Value::Null),
+        }
     }
 
     pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
-        // MCP plugins don't implement prompts; always empty
-        Ok(Vec::new())
+        match self.plugin.call::<(), String>("mcp_list_prompts", ()) {
+            Ok(raw) => {
+                let prompts: Vec<PromptDefinition> = serde_json::from_str(&raw)?;
+                Ok(prompts)
+            }
+            Err(_) => Ok(Vec::new()),
+        }
     }
 
-    pub fn get_prompt(&mut self, _name: &str, _arguments: Value) -> Result<Value, RuntimeError> {
-        // MCP plugins don't implement prompts; always empty
-        Ok(Value::Null)
+    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
+        let payload = json!({
+            "name": name,
+            "arguments": arguments
+        })
+        .to_string();
+
+        match self.plugin.call::<&str, String>("mcp_get_prompt", &payload) {
+            Ok(raw) => {
+                let val: Value = serde_json::from_str(&raw)?;
+                Ok(val)
+            }
+            Err(_) => Ok(Value::Null),
+        }
     }
 }
 
@@ -232,7 +436,7 @@ impl NativeSidecar {
 
         let mut child = cmd.spawn().map_err(|e| {
             RuntimeError::Execution(format!(
-                "Failed to spawn native sidecar '{}': {}",
+                "Failed to spawn native process '{}': {}",
                 self.binary_path.display(),
                 e
             ))
@@ -252,7 +456,7 @@ impl NativeSidecar {
         Ok(())
     }
 
-    fn send_request(&mut self, method: &str, params: Value) -> Result<Value, RuntimeError> {
+    pub fn send_request(&mut self, method: &str, params: Value) -> Result<Value, RuntimeError> {
         if self.child.is_none() {
             self.spawn_process()?;
         }
@@ -275,10 +479,10 @@ impl NativeSidecar {
         })?;
 
         stdin.write_all(req_str.as_bytes()).map_err(|e| {
-            RuntimeError::Execution(format!("Failed to write to native sidecar stdin: {}", e))
+            RuntimeError::Execution(format!("Failed to write to native process stdin: {}", e))
         })?;
         stdin.flush().map_err(|e| {
-            RuntimeError::Execution(format!("Failed to flush native sidecar stdin: {}", e))
+            RuntimeError::Execution(format!("Failed to flush native process stdin: {}", e))
         })?;
 
         let reader = self.reader.as_mut().ok_or_else(|| {
@@ -289,11 +493,11 @@ impl NativeSidecar {
         loop {
             line.clear();
             let n = reader.read_line(&mut line).map_err(|e| {
-                RuntimeError::Execution(format!("Failed to read from native sidecar stdout: {}", e))
+                RuntimeError::Execution(format!("Failed to read from native process stdout: {}", e))
             })?;
             if n == 0 {
                 return Err(RuntimeError::Execution(
-                    "Native sidecar process closed stdout unexpectedly".to_string(),
+                    "Native process closed stdout unexpectedly".to_string(),
                 ));
             }
 
@@ -314,7 +518,7 @@ impl NativeSidecar {
         let resp = self.send_request("initialize", json!({}))?;
         if let Some(err) = resp.get("error") {
             return Err(RuntimeError::Execution(format!(
-                "Sidecar initialize error: {}",
+                "Native process initialize error: {}",
                 err
             )));
         }
@@ -348,7 +552,7 @@ impl NativeSidecar {
         let resp = self.send_request("tools/list", json!({}))?;
         if let Some(err) = resp.get("error") {
             return Err(RuntimeError::Execution(format!(
-                "Sidecar tools/list error: {}",
+                "Native process tools/list error: {}",
                 err
             )));
         }
@@ -372,7 +576,7 @@ impl NativeSidecar {
             let msg = err
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("Unknown sidecar execution error");
+                .unwrap_or("Unknown native execution error");
             return Err(RuntimeError::Execution(msg.to_string()));
         }
 
@@ -391,23 +595,55 @@ impl NativeSidecar {
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
-        // Native sidecars don't implement resources; always empty
-        Ok(Vec::new())
+        match self.send_request("resources/list", json!({})) {
+            Ok(resp) if resp.get("error").is_none() => {
+                let res = resp.get("result").unwrap_or(&resp);
+                let resources_val = res.get("resources").unwrap_or(res);
+                let resources: Vec<ResourceDefinition> =
+                    serde_json::from_value(resources_val.clone()).unwrap_or_default();
+                Ok(resources)
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
-    pub fn read_resource(&mut self, _uri: &str) -> Result<Value, RuntimeError> {
-        // Native sidecars don't implement resources; always empty
-        Ok(Value::Null)
+    pub fn read_resource(&mut self, uri: &str) -> Result<Value, RuntimeError> {
+        match self.send_request("resources/read", json!({ "uri": uri })) {
+            Ok(resp) if resp.get("error").is_none() => {
+                let res = resp.get("result").unwrap_or(&resp);
+                Ok(res.clone())
+            }
+            _ => Ok(Value::Null),
+        }
     }
 
     pub fn list_prompts(&mut self) -> Result<Vec<PromptDefinition>, RuntimeError> {
-        // Native sidecars don't implement prompts; always empty
-        Ok(Vec::new())
+        match self.send_request("prompts/list", json!({})) {
+            Ok(resp) if resp.get("error").is_none() => {
+                let res = resp.get("result").unwrap_or(&resp);
+                let prompts_val = res.get("prompts").unwrap_or(res);
+                let prompts: Vec<PromptDefinition> =
+                    serde_json::from_value(prompts_val.clone()).unwrap_or_default();
+                Ok(prompts)
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
-    pub fn get_prompt(&mut self, _name: &str, _arguments: Value) -> Result<Value, RuntimeError> {
-        // Native sidecars don't implement prompts; always empty
-        Ok(Value::Null)
+    pub fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
+        match self.send_request(
+            "prompts/get",
+            json!({
+                "name": name,
+                "arguments": arguments
+            }),
+        ) {
+            Ok(resp) if resp.get("error").is_none() => {
+                let res = resp.get("result").unwrap_or(&resp);
+                Ok(res.clone())
+            }
+            _ => Ok(Value::Null),
+        }
     }
 }
 

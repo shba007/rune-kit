@@ -25,6 +25,9 @@ pub enum Commands {
         target: String,
         #[arg(short, long)]
         version: Option<String>,
+        /// Prefer installing native binary if available
+        #[arg(long)]
+        native: bool,
     },
     /// Uninstall an installed artifact (plugin or skill)
     Uninstall {
@@ -62,7 +65,6 @@ pub enum Commands {
     },
 }
 
-/// A unified artifact from search results (plugin or skill)
 #[derive(Debug, Clone)]
 struct SearchResult {
     ty: String,
@@ -158,17 +160,16 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Install {
             target,
             version,
+            native,
         } => {
-            // Detect if target is a skill or plugin
             let is_skill = target.ends_with(".md")
                 || target.ends_with(".txt")
                 || target.ends_with(".rst")
                 || target.ends_with(".markdown")
                 || target.contains("__")
-                || target.starts_with("#");
+                || target.starts_with('#');
 
             if is_skill {
-                // Install as skill
                 let installed = sm.install_skill(&target, version).await?;
                 println!(
                     "Installed skill '{}' (v{}, {}) — {}",
@@ -178,8 +179,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     installed.description.unwrap_or_else(|| "-".to_string()),
                 );
             } else {
-                // Install as plugin
-                let installed = pm.install(&target, version, false).await?;
+                let installed = pm.install(&target, version, native).await?;
                 let kind_label = match (&installed.native_binary_path, &installed.execution_kind) {
                     (Some(_), ExecutionKind::Native) => "native",
                     (Some(_), ExecutionKind::Wasm) => "wasm+native",
@@ -192,7 +192,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     installed.name, installed.version, kind_label
                 );
 
-                // Show additional info if available
                 if let Some(ref desc) = installed.description
                     && !desc.is_empty()
                 {
@@ -204,7 +203,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Uninstall { name } => {
-            // Try uninstalling as skill first (since skills are separate from plugins)
             if sm.uninstall_skill(&name)? {
                 println!("Uninstalled skill '{}'", name);
             } else if pm.uninstall(&name)? {
@@ -214,15 +212,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::List => {
-            // Show both plugins and skills with unified output
-            // Plugins
             let lockfile = pm.load_lockfile();
             if !lockfile.plugins.is_empty() {
                 println!("\nInstalled Plugins ({}):", lockfile.plugins.len());
                 render_list_table(&lockfile).render();
             }
 
-            // Skills
             let skill_lockfile = sm.load_skills_lockfile();
             if !skill_lockfile.skills.is_empty() {
                 println!("\nInstalled Skills ({}):", skill_lockfile.skills.len());
@@ -249,8 +244,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Available => {
-            // Show both plugin and skill registries with unified output
-            // Plugins
             let plugin_available = pm.fetch_registry().await?;
             let lockfile = pm.load_lockfile();
             if !plugin_available.is_empty() {
@@ -287,7 +280,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            // Skills
             let skill_available = sm.fetch_skills().await?;
             if !skill_available.is_empty() {
                 println!(
@@ -317,11 +309,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Search { keyword } => {
-            // Search both plugin and skill registries
             let kw_lower = keyword.to_lowercase();
             let mut matches: Vec<SearchResult> = Vec::new();
 
-            // Search plugins
             if let Ok(available) = pm.fetch_registry().await {
                 for p in available {
                     if p.name.to_lowercase().contains(&kw_lower)
@@ -341,7 +331,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Search skills
             if let Ok(available) = sm.fetch_skills().await {
                 for s in available {
                     if s.name.to_lowercase().contains(&kw_lower)
@@ -367,7 +356,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            // Render with type prefix
             let mut t = Table::new(88)
                 .column(Column::fixed("TYPE", 10))
                 .column(Column::fixed("NAME", 20))
@@ -388,10 +376,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             t.render();
         }
-        Commands::Update {
-            names,
-            check,
-        } => {
+        Commands::Update { names, check } => {
             let filter = if names.is_empty() {
                 None
             } else {
@@ -438,7 +423,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             for item in to_update {
-                // Determine if this is a plugin or skill based on name
                 let is_skill = sm
                     .load_skills_lockfile()
                     .skills

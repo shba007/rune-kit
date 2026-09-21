@@ -2,209 +2,266 @@
 
 ## 1. Overview
 
-- **What it is:** a Rust Cargo workspace that implements an MCP (Model Context
-  Protocol) plugin runtime plus a management CLI.
+- **What it is:** A Rust Cargo workspace implementing a high-performance Model Context Protocol (MCP) plugin runtime host and package manager CLI (`rune`).
 - **Stack:** Rust, edition 2024, workspace `resolver = 2`.
-- **Entry points:**
-  - `rune-kit-core` — library crate (the runtime). No `[[bin]]`.
-  - `rune-kit-cli` — **both** a binary crate (`[[bin]] name = "rune"` →
-    `src/main.rs`) **and** a library crate (`[lib] name = "rune_kit_cli"` →
-    `src/lib.rs`) in the same `Cargo.toml`. This is new: all CLI command
-    logic (`Commands` match arms, table rendering) lives in `lib.rs`;
-    `main.rs` is a five-line wrapper that calls `rune_kit_cli::main()`. The
-    split appears to exist to make CLI output testable — see §3's testing
-    note — but see §5 for a real behavior change this split introduced.
-- **Dependency direction is one-way:** `rune-kit-cli` → `rune-kit-core`.
-  `rune-kit-core` never depends back on the CLI.
+- **Artifact Model:** `rune-kit` manages two distinct artifact classes:
+  - **Plugins (Code):** Executable MCP services delivering tools, resources, and prompts to MCP clients. Plugins run in one of two execution tiers:
+    1. **WebAssembly (`ExecutionKind::Wasm`):** Sandboxed guest modules (`.wasm`) compiled to `wasm32-wasip1`, running in Extism/Wasmtime with optional companion native sidecars.
+    2. **Direct Standalone Native (`ExecutionKind::Native`):** Compiled OS binaries (`.exe` or ELF/Mach-O) communicating via JSON-RPC stdio, utilized when operations are fundamentally incompatible with WASM virtualization.
+  - **Skills (Content):** Declarative prompts, context instructions, and reference content packages (e.g., `SKILL.md`) installed to local storage without execution privileges.
+- **Core Architectural Premise:**
+  - **WASM-First by Preference:** WebAssembly (`wasm32-wasip1`) is the default sandboxing model for portable, secure, and cross-platform compute.
+  - **Direct Standalone Native Support:** When plugins require raw system capabilities that cannot run within WASM (e.g., low-level OS event loops, desktop/window automation, proprietary device drivers, native graphics/display APIs, or complex multithreading), `rune-kit` allows direct execution of native companion binaries as first-class MCP servers.
+  - **WASM-Mediated Native Sidecars:** For hybrid workloads, WASM guest modules maintain the MCP interface while delegating heavy OS routines to a companion native process (`rune-<name>-native`) via host-mediated execution bridges.
+  - **Host-Managed External Binaries:** External CLI dependencies (e.g., `ffmpeg`, `yt-dlp`, `gallery-dl`) are downloaded, verified, cached, and managed by **`rune-kit`**, not by `rune-tools`. `rune-kit` provisions verified static binaries on clean user machines and exposes resolved executable paths to the plugin runtime.
+- **Entry Points:**
+  - `rune-kit-core` — Library crate (the runtime). Contains no `[[bin]]`.
+  - `rune-kit-cli` — Both a binary crate (`[[bin]] name = "rune"` → `src/main.rs`) and a library crate (`[lib] name = "rune_kit_cli"` → `src/lib.rs`). All CLI command dispatch and table rendering live in `lib.rs`; `main.rs` is a wrapper invoking `rune_kit_cli::main()` and propagating non-zero exit codes on failure.
+- **Dependency Direction is One-Way:** `rune-kit-cli` → `rune-kit-core`. `rune-kit-core` never depends on the CLI.
+
+---
 
 ## 2. Architecture Map
 
-Two crates, one of which (core) hosts **two plugin execution models**, both
-implemented in `crates/rune-kit-core/src/runtime.rs`:
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                    rune-kit-cli ("rune")                     │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                       rune-kit-core                          │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │             McpRouter (protocol.rs)                    │  │
+│  │  • Single JSON-RPC stdio transport front door          │  │
+│  │  • Unified dispatch for tools, resources, and prompts  │  │
+│  └──────────────┬───────────────────────────┬─────────────┘  │
+│                 │                           │                │
+│                 ▼                           ▼                │
+│  ┌────────────────────────────┐ ┌─────────────────────────┐  │
+│  │     WasmPluginInstance     │ │      NativeSidecar      │  │
+│  │  • Extism/Wasmtime sandbox │ │  (Standalone Execution) │  │
+│  │  • Capabilities gate       │ │  • Direct stdio MCP     │  │
+│  └──────────────┬─────────────┘ │  • Deep OS/C-FFI access │  │
+│                 │ Host Bridge   └─────────────────────────┘  │
+│                 ▼                                            │
+│  ┌────────────────────────────┐                              │
+│  │ Companion Native Sidecar   │                              │
+│  │ (rune-<name>-native)       │                              │
+│  │ • WASM-mediated execution  │                              │
+│  └────────────────────────────┘                              │
+│                 │ Host FFI                                   │
+│                 ▼                                            │
+│  ┌────────────────────────────┐                              │
+│  │ External Binary Engine     │                              │
+│  │ (_bin/<name>/<version>/)   │                              │
+│  │ • ffmpeg, yt-dlp, etc.     │                              │
+│  └────────────────────────────┘                              │
+└──────────────────────────────────────────────────────────────┘
+```
 
-1. **WASM plugin** — Extism/Wasmtime sandbox.
-   - `WasmPluginInstance` struct, `load_from_bytes`,
-     `Manifest::new([Wasm::data(bytes)])`,
-     `PluginBuilder::new(manifest).with_wasi(true).with_function("host_cmd_exec", …)`.
-2. **Native sidecar** — spawned as an OS child process, JSON-RPC over stdin/stdout.
-   - `NativeSidecar` struct, `spawn_process()`,
-     `Command::new(binary_path)` + `cmd.spawn()`, `send_request`.
+### 2.1 The Execution Architecture
 
-**Dispatch:** a `PluginInstance` enum (`Wasm | Native`) with
-`load_wasm_from_file` / `load_native_from_file`; per-call dispatch now covers
-**six** methods, not three: `get_info` / `list_tools` / `call_tool` /
-`list_resources` / `read_resource` / `list_prompts` / `get_prompt`. (Line
-numbers intentionally omitted here — the file has grown enough since the
-three-method version that citing stale numbers would be worse than citing
-none; re-grep before quoting a line reference.)
+`rune-kit-core` hosts the plugin runtime across two execution models managed under `PluginInstance` (`crates/rune-kit-core/src/runtime.rs`):
 
-**All plugin interactions go through the `McpRouter` interface (spec, per maintainer).**
-`McpRouter` (`crates/rune-kit-core/src/protocol.rs`) is the single JSON-RPC front
-door. It now actually implements `resources/list`, `resources/read`,
-`prompts/list`, and `prompts/get` — these were previously hardcoded to return
-empty arrays; they now aggregate across registered `PluginInstance`s the same
-way `tools/list`/`tools/call` always have. Resource URIs are namespaced as
-`rune://<namespace>/<plugin-local-uri>`, parsed back apart on `resources/read`
-by splitting on the first `/` after the scheme. Prompts use the same
-`namespace__name` convention tools already use. `run_stdio` serves the
-stdin/stdout loop. The CLI's `run` command (`crates/rune-kit-cli/src/lib.rs`,
-`Commands::Run` arm — moved from `main.rs`, see §1) builds a `McpRouter`,
-registers instances, and serves via `router.run_stdio()` — still the only
-plugin-serving path. This is the spec, not a description of the current code:
-if any code path ever interacts with a plugin without going through `McpRouter`,
-that is an implementation bug to fix — do **not** change the spec to match the
-code.
+```rust
+pub enum PluginInstance {
+    Wasm(WasmPluginInstance),
+    Native(NativeSidecar),
+}
+```
 
-**`host_cmd_exec` gained a resolution fallback.** If `req.program` isn't
-absolute and doesn't exist as given, it's now also checked against
-`dirs::data_dir()/rune-kit/plugins/<program>` (and `<program>.exe`) before
-failing — i.e. a WASM plugin's exec request can resolve against the
-directory where installed native sidecar binaries live, not just `PATH`.
-This widens `host_cmd_exec`'s reach; flagged in §6, not asserted as
-intentional or a gap.
+1. **WASM Plugin Sandbox (`WasmPluginInstance`):**
+   - Extism/Wasmtime sandbox targeting `wasm32-wasip1`.
+   - Initialized via `Manifest::new([Wasm::data(bytes)])` and `PluginBuilder::new(manifest).with_wasi(true)`.
+   - Exposes typed host functions to the guest:
+     - `host_cmd_exec` — Invokes allowlisted external CLI utilities.
+     - `host_sidecar_exec` — Bridges WASM requests to companion native sidecars (`rune-<name>-native`).
+     - `host_get_binary_path` — Resolves paths to host-provisioned static tools (`ffmpeg`, `yt-dlp`).
+   - Restricts network and filesystem access according to declared manifest capabilities.
 
-**Choosing the model (rule of thumb, per maintainer):** if removing the WASM
-layer wouldn't remove any real sandboxing benefit — because the dangerous work
-already happens host-side of a `host_fn` — build a **native sidecar** instead.
-Don't pay the WASM/`host_fn` serialization tax for a pass-through.
+2. **Native Process Engine (`NativeSidecar`):**
+   - Manages companion or standalone OS processes communicating via stdio JSON-RPC.
+   - **Standalone Plugin Mode:** Directly bound to `McpRouter` when a plugin declares `execution_kind = "native"` or is installed directly as a native executable.
+   - **Companion Sidecar Mode:** Supervised companion process (`rune-<name>-native`) called internally by a WASM guest module through `host_sidecar_exec`.
+   - Lifecycle management handles piped stdio, lazy respawn on process exit, and clean SIGTERM/kill handling on teardown.
 
-> The two-crate split and the dual execution model are the same confirmed fact
-> recorded under two graph nodes (`arch:two-crate-structure`,
-> `arch:two-crate-dual-execution`). They are presented together here.
+### 2.2 Dispatch via `McpRouter`
 
-## 3. Naming & Style Conventions
+All external client MCP interactions route through `McpRouter` (`crates/rune-kit-core/src/protocol.rs`):
+- Single JSON-RPC stdio transport front door for clients.
+- Dispatches across registered plugin instances (`PluginInstance::Wasm` and `PluginInstance::Native`) for all six core MCP methods:
+  - `tools/list` & `tools/call` (namespaced via `<namespace>__<tool_name>`)
+  - `resources/list` & `resources/read` (namespaced via `rune://<namespace>/<plugin-local-uri>`)
+  - `prompts/list` & `prompts/get` (namespaced via `<namespace>__<prompt_name>`)
+- Clients interact with a unified interface regardless of whether a plugin is executed in WASM or directly as a native process.
 
-Only these are confirmed. Do not assume other conventions (function/variable
-naming, module layout, commit style) — they are not yet verified.
+### 2.3 Choosing the Execution Model
 
-- **Serde wire naming — default, no repo-wide enum rule.**
-  Serde uses default naming; there is **no** blanket `snake_case`/`rename_all`
-  convention on public enums. Explicit `#[serde(rename)]` / `rename_all` appear
-  only where an external contract requires it — now **three** confirmed
-  instances, not two:
-  - `crates/rune-kit-core/src/manifest.rs` — `ExecutionKind`, `rename_all = "snake_case"`.
-  - `crates/rune-kit-core/src/manifest.rs` — `ToolDefinition.input_schema`,
-    `rename = "inputSchema"` (alias `input_schema`).
-  - `crates/rune-kit-core/src/manifest.rs` — `ResourceDefinition.mime_type`,
-    `rename = "mimeType"` (alias `mime_type`) — same reasoning as
-    `input_schema`: the MCP wire format is camelCase, the Rust field stays
-    idiomatic snake_case, and the alias means either JSON casing
-    deserializes cleanly.
-  - `PromptDefinition`/`PromptArgument` need **no** renames — every field is
-    already spelled the same both ways (`name`, `description`, `arguments`,
-    `required`) — this is not an exception to the rule, it just never
-    triggers the rule's condition.
-- **Error types are `thiserror` enums.**
-  `#[derive(Error, Debug)]`, a human-readable `#[error(…)]` per variant, and
-  `#[from]` for automatic conversion:
-  - `crates/rune-kit-core/src/package.rs` — `PackageError`.
-  - `crates/rune-kit-core/src/runtime.rs` — `RuntimeError`.
-  - *Scope:* this applies to `rune-kit-core` only. The CLI deliberately does not
-    use thiserror (see below).
-- **CLI errors are boxed, not `thiserror` — but exit-code propagation is now broken.**
-  `rune_kit_cli::main` (now in `crates/rune-kit-cli/src/lib.rs`, not
-  `main.rs` — see §1) still returns `Result<(), Box<dyn std::error::Error>>`,
-  and core `PackageError`/`RuntimeError` still propagate into it via `?`. What
-  changed: the actual binary entry point,
-  `crates/rune-kit-cli/src/main.rs`, is now:
-  ```rust
-  #[tokio::main]
-  async fn main() {
-      let _ = library_main().await;
-  }
-  ```
-  `main()` returns `()`, not the library's `Result` — so the `Result` is
-  evaluated and discarded, not propagated to the process exit code. See §5:
-  this is a new, likely-unintentional behavior change, not a continuation of
-  the previously-documented pattern.
-- **CLI output rendering has its own tested abstraction.**
-  `crates/rune-kit-cli/src/output.rs` defines `Table`/`Column` (fixed vs.
-  flexible-width columns, char-aware truncation only on flexible columns) and
-  is covered two ways: inline `#[cfg(test)] mod tests` in `output.rs` itself,
-  plus a separate integration test at `crates/rune-kit-cli/tests/output.rs`
-  that asserts exact header-row strings for each table (`render_list_table`,
-  `render_registry_table`, `render_update_status_table`). Treat header-row
-  wording/column order as load-bearing — the tests will catch drift, so
-  changing a header intentionally means updating the matching assertion in
-  `tests/output.rs`, not silencing it.
-
-## 4. Key Flows
-
-### Native sidecar lifecycle — "fail fast at load, self-heal on crash"
-
-The native sidecar child process has **two** spawn paths in `runtime.rs`
-(intentional design, per maintainer):
-
-- **Eager spawn** in `new` — surfaces load errors immediately.
-- **Lazy respawn** in `send_request` — restarts the child if it died between
-  calls.
-
-This applies uniformly to all four call kinds now, not just tools: `list_tools`,
-`call_tool`, `list_resources`, `read_resource`, `list_prompts`, and
-`get_prompt` all funnel through the same `send_request`, so they all inherit
-both the spawn behavior above and the one-in-flight limitation below equally.
-
-### Native sidecar request/response — one-in-flight (see Known Limitations)
-
-`send_request` returns the **first** JSON-object line read from stdout and
-does **not** correlate on the JSON-RPC `id` field. Unchanged by the
-resources/prompts additions — every new sidecar method reuses this same
-function, so it inherits the same limitation without modification.
-
-## 5. Known Inconsistencies / Exceptions
-
-- **`rune` now exits 0 on every command failure, not just self-update
-  (new — likely a regression, not confirmed intentional).** Previously, only
-  `Commands::SelfUpdate` deliberately swallowed its error and exited 0
-  (documented below, and that one *is* confirmed intentional). Since
-  `main.rs` was split into a thin wrapper (§1/§3) that discards
-  `library_main()`'s `Result` entirely, **every** command — `Install`,
-  `Run`, `Update`, all of it — now exits 0 even when it fails, with no error
-  printed to the terminal at all (not even the `eprintln!` the old self-update
-  arm used). This is a strictly worse outcome than the previously-documented
-  self-update-specific exception, and looks like an artifact of the lib/bin
-  split rather than a deliberate choice extending "self-update is best-effort"
-  to the entire CLI. Needs maintainer confirmation before treating either
-  reading as settled.
-- **Native sidecar is strictly one-request-at-a-time (a limitation, NOT intentional).**
-  `send_request` ignores the JSON-RPC `id`, so the sidecar cannot interleave
-  responses, and any unsolicited notification would be consumed as the
-  pending response. Do not "fix" the double-spawn in §4 — that half is
-  intentional; the one-in-flight behavior is the actual constraint. This now
-  also gates `resources/read` and `get_prompt` for native sidecars, not just
-  tool calls.
-- **`rune self-update` exits 0 even on failure (intentional, per maintainer).**
-  The `Commands::SelfUpdate` arm (now in `crates/rune-kit-cli/src/lib.rs`)
-  matches the error, `eprintln!`s it, and falls through to `Ok(())` — so a
-  failed self-update exits 0 by design. What's changed since the last version
-  of this doc: that `Ok(())` no longer *matters* for the exit code the same
-  way it used to, since (per the point above) every other command's `Err`
-  now also produces exit 0 — self-update's intentional behavior and every
-  other command's apparently-unintentional behavior currently look identical
-  from outside the process. Worth re-confirming this exception still means
-  anything distinct once/if the bug above is fixed.
-
-## 6. Open Questions (not yet confirmed — do not encode as conventions)
-
-- **WASM sandbox: default network policy** — appears to allow-all when no
-  `allowed_hosts` is set. Intentional or a gap? (Unchanged since last version.)
-- **WASM sandbox: `host_cmd_exec`** — host-command escape hatch exposed to
-  plugins. Intentional capability or over-broad? **Now compounded**: it also
-  resolves bare program names against the installed native-sidecar plugins
-  directory (§2) before failing, meaning a WASM plugin can potentially invoke
-  another installed plugin's native binary by name, with no allowlist gating
-  that specific resolution path. Whether this was a deliberate convenience
-  (e.g. letting a WASM plugin delegate to a co-installed native helper) or an
-  unreviewed side effect of adding PATH-fallback logic is unconfirmed.
-- **WASM sandbox: `printer_ip` special-case.** Purpose / intent unclear.
-  (Unchanged since last version.)
-- **CLI exit-code regression (§5)** — is the blanket exit-0 behavior
-  intentional (extending self-update's philosophy CLI-wide) or an
-  unreviewed side effect of the lib/bin split? Resolve before treating
-  either as documented behavior.
-- **Graph hygiene:** `arch:two-crate-dual-execution` and `arch:two-crate-structure`
-  overlap; candidate to merge into one node. (Unchanged since last version.)
+| Model | Implementation | When to Use |
+| :--- | :--- | :--- |
+| **Pure WASM** | `WasmPluginInstance` | Standard API integrations, deterministic compute, document parsers, transforms, and sandboxed file/network operations. |
+| **WASM + Native Sidecar** | `WasmPluginInstance` + companion `NativeSidecar` | Scenarios where the MCP contract is maintained in portable WASM, but performance-heavy native workloads or OS printing (CUPS/WinSpool) are delegated via host bridges. |
+| **Direct Standalone Native** | `NativeSidecar` (direct) | Low-level OS automation, window manager interaction, native GUI automation, hardware/driver access, or existing native MCP binaries that cannot be cross-compiled to WASM. |
 
 ---
-*Generated from confirmed graph facts, last updated 2026-09-15. Update via diff-patch as more
-facts are confirmed; do not regenerate sections that are already correct.*
+
+## 3. External Binary Provisioning Engine
+
+`rune-kit-core` ensures that third-party CLI dependencies (`ffmpeg`, `yt-dlp`, etc.) are installed, verified, and accessible without requiring external package managers (Homebrew, apt, cargo, pip, or npm).
+
+### 3.1 Manifest Contract (`plugin.toml`)
+
+Plugin requirements are declared in `plugin.toml` and parsed by `crates/rune-kit-core/src/manifest.rs`:
+
+```toml
+[capabilities]
+network_hosts = ["api.example.com"]
+filesystem = { mode = "scoped", root_param = "allowed_dir" }
+exec = { allowed_binaries = ["ffmpeg", "yt-dlp"] }
+
+[dependencies.binaries.ffmpeg]
+version = ">=6.1"
+optional = false
+description = "Audio extraction and media transcoding"
+
+[dependencies.binaries.yt-dlp]
+version = ">=2024.01.01"
+optional = true
+description = "Stream extraction"
+```
+
+### 3.2 Provisioning Lifecycle & Storage
+
+1. **Storage Cache:** External tools are maintained in a shared, host-managed cache:
+   ```text
+   dirs::data_dir()/rune-kit/_bin/
+   ├── ffmpeg/
+   │   └── 6.1.1/
+   │       ├── ffmpeg (executable, mode 0755)
+   │       ├── ffprobe
+   │       └── .verified (SHA-256 validation marker)
+   └── yt-dlp/
+       └── 2024.03.10/
+           ├── yt-dlp
+           └── .verified
+   ```
+2. **Download & Verification:**
+   - Pre-pinned static builds mapped to `std::env::consts::{OS, ARCH}`.
+   - Downloaded via HTTPS to temporary `.partial-*` directories.
+   - Mandatory SHA-256 validation prior to unpacking.
+   - Pure-Rust archive extraction (`zip`, `tar.gz`) without host system utilities.
+   - Target version directories are activated atomically upon writing `.verified`.
+3. **Cross-Process Concurrency:** File locks (`_bin/<name>/.lock`) guard against redundant concurrent downloads when multiple plugins initialize concurrently.
+
+### 3.3 Runtime Query & Resolution API
+
+The host exposes tool availability to plugins via `host_get_binary_path(name)`:
+- Verifies `name` against `capabilities.exec.allowed_binaries`.
+- Returns the absolute path when installed and verified.
+- Returns non-fatal status `InProgress { progress_percent, eta_seconds }` if currently downloading.
+- Returns `NotFound` if unmanaged or missing.
+- Provides actionable errors for MCP clients:
+  `{"status": "error", "error": "ffmpeg is currently being provisioned (45% downloaded). Please retry in 30 seconds."}`
+
+---
+
+## 4. Skills Management Subsystem (Content Artifacts)
+
+In addition to executable plugins, `rune-kit` natively manages **Skills**—reusable prompt packages, instructions, context documents, and reference materials.
+
+### 4.1 Plugins vs. Skills Architectural Boundary
+
+| Dimension | Plugins (`PackageManager`) | Skills (`SkillManager`) |
+| :--- | :--- | :--- |
+| **Nature** | Executable MCP servers (WASM or Native) | Declarative markdown, prompts, instructions |
+| **Execution** | Extism WASM runtime / OS process | Non-executable static content |
+| **Storage** | `dirs::data_dir()/rune-kit/plugins/` | `dirs::data_dir()/rune-kit/skills/<name>/` |
+| **Lockfile** | `installed.json` (`Lockfile`) | `installed_skills.json` (`SkillLockfile`) |
+| **Registry Schema** | `RegistryPluginSummary` | `RegistrySkillSummary` (includes `author`, `tags`) |
+
+### 4.2 Target Detection & Installation
+
+The CLI automatically differentiates between skills and plugins during `rune install <target>`:
+- **Skill Detection:** Targets ending in `.md`, `.txt`, `.rst`, `.markdown`, containing double underscores (`__`), or beginning with `#` route to `SkillManager::install_skill`.
+- **Packaging:** Skills may be installed as raw standalone text files or compressed bundles (`.zip`, `.tar.gz`).
+- **Integrity Tracking:** constituent files are extracted into `skills/<name>/` and hashed (`SkillFile.sha256`) to maintain lockfile verification.
+
+---
+
+## 5. Naming & Style Conventions
+
+- **Serde Wire Naming:**
+  - `crates/rune-kit-core/src/manifest.rs`:
+    - `ExecutionKind`: `rename_all = "snake_case"` (`"wasm"`, `"native"`).
+    - `ToolDefinition.input_schema`: `rename = "inputSchema"`, aliased to `input_schema`.
+    - `ResourceDefinition.mime_type`: `rename = "mimeType"`, aliased to `mime_type`.
+  - `PromptDefinition` and `PromptArgument` match MCP wire schemas directly without explicit renames.
+  - `BinaryDependencySpec` deserializes `[dependencies.binaries]` using snake_case properties.
+- **Error Types (`thiserror`):**
+  - All core error types are strongly-typed enums using `#[derive(Error, Debug)]`:
+    - `crates/rune-kit-core/src/package.rs` — `PackageError`.
+    - `crates/rune-kit-core/src/runtime.rs` — `RuntimeError`.
+    - `crates/rune-kit-core/src/provision.rs` — `ProvisionError`.
+  - CLI errors remain boxed (`Result<(), Box<dyn std::error::Error>>`) and print to `eprintln!` before terminating with `std::process::exit(1)`.
+- **Output Rendering:**
+  - `crates/rune-kit-cli/src/output.rs` provides `Table` and `Column` definitions (supporting fixed and flexible widths with char-aware truncation). Header rows are verified via integration tests in `crates/rune-kit-cli/tests/output_tests.rs`.
+  - The `SkillRow` trait abstracts fields across `InstalledSkill` and `RegistrySkillSummary` for skill table rendering.
+
+---
+
+## 6. Key Flows
+
+### 6.1 Plugin Installation and Registration
+
+During `rune install <target>`:
+1. **Target Inspection:**
+   - **Local `.wasm`:** Installed as `ExecutionKind::Wasm`. Companion sidecars (`rune-<name>-native` or `<name>-native`) and `plugin.toml` files in the same directory are automatically packaged alongside it.
+   - **Local Native Binary / Archive (`.exe`, ELF, `.zip`, `.tar.gz`):** Installed as `ExecutionKind::Native` when native OS capabilities are required.
+   - **Remote Registry (`name`):** Fetches the index entry, downloading WASM, native, or hybrid artifacts based on target triple matching.
+2. **Dependency Audit:** Evaluates `manifest.dependencies.binaries`. Non-optional dependencies are downloaded and verified via `BinaryProvisioner`.
+3. **Registration:** Records binary paths, execution kind, SHA-256 hash, and parameters to `installed.json`.
+
+### 6.2 MCP Request Execution Flow
+
+1. The client issues a JSON-RPC request over stdio (`tools/*`, `resources/*`, or `prompts/*`).
+2. `McpRouter` decodes the namespace prefix and routes the call to the corresponding `PluginInstance`:
+   - **WASM Route:** Invokes guest exports (`mcp_call_tool`, `mcp_read_resource`, `mcp_get_prompt`). If native work is required, WASM dispatches to the companion binary via `host_sidecar_exec`.
+   - **Native Route:** Sends JSON-RPC commands directly over stdio pipes to the running standalone `NativeSidecar` process and reads output lines.
+3. Formatted JSON-RPC responses are returned to the client through stdout.
+
+### 6.3 Native Process Lifecycle (Companion and Standalone)
+
+Whether operating as a WASM companion or as a standalone native server:
+- **Eager Check:** Confirms the binary exists and has executable permissions (0755 on Unix) during registration.
+- **Lazy Spawn & Respawn:** Processes spawn on first invocation. If the native process exits or crashes between calls, it restarts transparently.
+- **Controlled Teardown:** The `Drop` implementation kills child processes cleanly and cleans up associated stdio pipes.
+
+### 6.4 Skill Installation and Lifecycle
+
+1. `rune install <target>` identifies the artifact as content.
+2. `SkillManager` downloads or copies files into `skills/<name>/`.
+3. Member files are hashed (SHA-256) and logged in `installed_skills.json`.
+4. Installed skills are listed with `rune list` and updated with `rune update`.
+
+---
+
+## 7. Known Inconsistencies / Exceptions
+
+- **`rune self-update` Exits 0 on Failure (Intentional):**
+  The `Commands::SelfUpdate` handler in `lib.rs` logs errors to `eprintln!` and returns `Ok(())` to prevent automated background updates from failing parent processes.
+- **Sidecar JSON-RPC Serialization Constraint:**
+  Native sidecar and standalone processes communicate via single-threaded stdio pipes per plugin instance. Calls are serialized sequentially per process.
+
+---
+
+## 8. Open Questions
+
+- **WASM Sandbox Default Network Policy:** Determine whether omitting `allowed_hosts` in `plugin.toml` should deny network access by default or maintain permissive network defaults.
+- **Printer IP Routing Migration:** Evaluate whether legacy host printer routing logic in `runtime.rs` should be completely delegated to `rune-print`'s native implementation.
+
+---
+
+*Generated from confirmed architectural contracts and repository implementations.*  
+*Last updated: 2026-09-21.*

@@ -1,7 +1,8 @@
 use crate::manifest::{
-    ExecutionKind, InstalledPlugin, InstalledSkill, Lockfile, PluginUpdateStatus,
+    ExecutionKind, InstalledPlugin, InstalledSkill, Lockfile, PluginManifest, PluginUpdateStatus,
     RegistryPluginSummary, RegistrySkillSummary, SkillFile, SkillLockfile,
 };
+use crate::provision::BinaryProvisioner;
 use crate::runtime::{NativeSidecar, WasmPluginInstance};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -23,6 +24,8 @@ pub enum PackageError {
     InvalidSpec(String),
     #[error("Runtime initialization probe failed: {0}")]
     Runtime(#[from] crate::runtime::RuntimeError),
+    #[error("Dependency provisioning failed: {0}")]
+    Provision(#[from] crate::provision::ProvisionError),
     #[error("Self-update error: {0}")]
     SelfUpdate(String),
 }
@@ -32,12 +35,14 @@ pub struct FetchedBundle {
     pub version: Option<String>,
     pub wasm_bytes: Option<Vec<u8>>,
     pub native_bytes: Option<Vec<u8>>,
+    pub manifest_toml: Option<String>,
     pub source: String,
 }
 
 pub struct PackageManager {
     base_dir: PathBuf,
     lockfile_path: PathBuf,
+    provisioner: BinaryProvisioner,
 }
 
 impl Default for PackageManager {
@@ -58,6 +63,7 @@ impl PackageManager {
         Self {
             base_dir,
             lockfile_path,
+            provisioner: BinaryProvisioner::new(),
         }
     }
 
@@ -284,40 +290,82 @@ impl PackageManager {
         version: Option<String>,
         prefer_native: bool,
     ) -> Result<InstalledPlugin, PackageError> {
-        let bundle = if target.ends_with(".wasm") && Path::new(target).exists() {
-            let path = Path::new(target);
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| {
-                    PackageError::InvalidSpec(format!(
-                        "Cannot derive a plugin name from path '{}'",
-                        target
-                    ))
-                })?
-                .to_string();
-            let bytes = std::fs::read(path)?;
-            FetchedBundle {
-                name: stem,
-                version,
-                wasm_bytes: Some(bytes),
-                native_bytes: None,
-                source: target.to_string(),
-            }
-        } else if is_native_archive_or_binary(target) && Path::new(target).exists() {
-            let path = Path::new(target);
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("plugin")
-                .to_string();
-            let bytes = std::fs::read(path)?;
-            FetchedBundle {
-                name: stem,
-                version,
-                wasm_bytes: None,
-                native_bytes: Some(bytes),
-                source: target.to_string(),
+        let target_path = Path::new(target);
+
+        let bundle = if target_path.exists() {
+            if target.ends_with(".wasm") {
+                let stem = target_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .ok_or_else(|| {
+                        PackageError::InvalidSpec(format!(
+                            "Cannot derive a plugin name from path '{}'",
+                            target
+                        ))
+                    })?
+                    .replace('_', "-");
+                let bytes = std::fs::read(target_path)?;
+                let parent = target_path.parent().unwrap_or_else(|| Path::new("."));
+
+                let manifest_toml = {
+                    let m_path = parent.join("plugin.toml");
+                    if m_path.exists() {
+                        std::fs::read_to_string(m_path).ok()
+                    } else {
+                        None
+                    }
+                };
+
+                let sidecar_candidates = [
+                    parent.join(format!("rune-{}-native.exe", stem)),
+                    parent.join(format!("rune-{}-native", stem)),
+                    parent.join(format!("{}-native.exe", stem)),
+                    parent.join(format!("{}-native", stem)),
+                ];
+                let native_bytes = sidecar_candidates
+                    .iter()
+                    .find(|p| p.exists())
+                    .and_then(|p| std::fs::read(p).ok());
+
+                FetchedBundle {
+                    name: stem,
+                    version,
+                    wasm_bytes: Some(bytes),
+                    native_bytes,
+                    manifest_toml,
+                    source: target.to_string(),
+                }
+            } else if is_native_archive_or_binary(target) {
+                let stem = target_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("plugin")
+                    .to_string();
+                let bytes = std::fs::read(target_path)?;
+                let parent = target_path.parent().unwrap_or_else(|| Path::new("."));
+
+                let manifest_toml = {
+                    let m_path = parent.join("plugin.toml");
+                    if m_path.exists() {
+                        std::fs::read_to_string(m_path).ok()
+                    } else {
+                        None
+                    }
+                };
+
+                FetchedBundle {
+                    name: stem,
+                    version,
+                    wasm_bytes: None,
+                    native_bytes: Some(bytes),
+                    manifest_toml,
+                    source: target.to_string(),
+                }
+            } else {
+                return Err(PackageError::InvalidSpec(format!(
+                    "Unrecognized plugin file format: '{}'",
+                    target
+                )));
             }
         } else if target.starts_with("http://") || target.starts_with("https://") {
             let res = reqwest::get(target).await?.bytes().await?.to_vec();
@@ -327,7 +375,8 @@ impl PackageManager {
                 .unwrap_or("plugin")
                 .replace(".wasm", "")
                 .replace(".zip", "")
-                .replace(".tar.gz", "");
+                .replace(".tar.gz", "")
+                .replace(".exe", "");
 
             if target.ends_with(".wasm") {
                 FetchedBundle {
@@ -335,6 +384,7 @@ impl PackageManager {
                     version,
                     wasm_bytes: Some(res),
                     native_bytes: None,
+                    manifest_toml: None,
                     source: target.to_string(),
                 }
             } else {
@@ -343,6 +393,7 @@ impl PackageManager {
                     version,
                     wasm_bytes: None,
                     native_bytes: Some(res),
+                    manifest_toml: None,
                     source: target.to_string(),
                 }
             }
@@ -353,6 +404,18 @@ impl PackageManager {
 
         let plugins_dir = self.base_dir.join("plugins");
         std::fs::create_dir_all(&plugins_dir)?;
+
+        let manifest = if let Some(ref toml_str) = bundle.manifest_toml {
+            PluginManifest::from_toml(toml_str).unwrap_or_default()
+        } else {
+            PluginManifest::default()
+        };
+
+        for (dep_name, dep_spec) in &manifest.dependencies.binaries {
+            if !dep_spec.optional {
+                let _ = self.provisioner.provision_binary(dep_name, dep_spec).await?;
+            }
+        }
 
         let mut probe_params = HashMap::new();
         probe_params.insert("allowed_hosts".to_string(), String::new());
@@ -366,43 +429,38 @@ impl PackageManager {
             None,
         );
 
-        if let Some(ref wasm_bytes) = bundle.wasm_bytes
-            && let Ok(mut instance) = WasmPluginInstance::load_from_bytes(
-                &bundle.name,
-                wasm_bytes.clone(),
-                probe_params.clone(),
-            )
-            && let Ok(info) = instance.get_info()
-        {
-            final_name = if bundle.name.is_empty() {
-                info.name
-            } else {
-                bundle.name.clone()
-            };
-            final_ver = bundle.version.clone().unwrap_or(info.version);
-            final_desc = info.description;
-        }
-
-        sanitize_path_component(&final_name, "plugin name")?;
-        sanitize_path_component(&final_ver, "plugin version")?;
-
         let mut wasm_rel_path = None;
         let mut sha256_hash = String::new();
 
         if let Some(ref wasm_bytes) = bundle.wasm_bytes {
+            if let Ok(mut instance) = WasmPluginInstance::load_from_bytes(
+                &bundle.name,
+                wasm_bytes.clone(),
+                probe_params.clone(),
+                manifest.clone(),
+            ) && let Ok(info) = instance.get_info()
+            {
+                final_name = if bundle.name.is_empty() {
+                    info.name
+                } else {
+                    bundle.name.clone()
+                };
+                final_ver = bundle.version.clone().unwrap_or(info.version);
+                final_desc = info.description;
+            }
+
             sha256_hash = Sha256::digest(wasm_bytes)
                 .iter()
                 .map(|b| format!("{:02x}", b))
                 .collect();
 
             let file_name = format!("{}-{}.wasm", final_name, final_ver);
-            let dest = plugins_dir.join(&file_name);
-            std::fs::write(&dest, wasm_bytes)?;
+            let dest_wasm = plugins_dir.join(&file_name);
+            std::fs::write(&dest_wasm, wasm_bytes)?;
             wasm_rel_path = Some(format!("plugins/{}", file_name));
         }
 
         let mut native_rel_path = None;
-
         if let Some(ref native_bytes) = bundle.native_bytes {
             if sha256_hash.is_empty() {
                 sha256_hash = Sha256::digest(native_bytes)
@@ -411,17 +469,16 @@ impl PackageManager {
                     .collect();
             }
 
-            let temp_dir_name = format!(".tmp-{}-{}", final_name, chrono_timestamp());
-            let temp_extract_dir = plugins_dir.join(&temp_dir_name);
-            std::fs::create_dir_all(&temp_extract_dir)?;
+            let temp_dir = plugins_dir.join(format!(".tmp-native-{}", chrono_timestamp()));
+            std::fs::create_dir_all(&temp_dir)?;
 
             let extracted_binary =
-                extract_archive_or_binary(native_bytes, &temp_extract_dir, &final_name)?;
+                extract_archive_or_binary(native_bytes, &temp_dir, &final_name)?;
             set_executable_permissions(&extracted_binary)?;
 
             if final_desc.is_none()
                 && let Ok(mut sidecar) =
-                    NativeSidecar::new(&final_name, &extracted_binary, probe_params)
+                    NativeSidecar::new(&final_name, &extracted_binary, probe_params.clone())
                 && let Ok(info) = sidecar.get_info()
             {
                 final_ver = bundle.version.clone().unwrap_or(info.version);
@@ -438,32 +495,39 @@ impl PackageManager {
             if final_bin_path.exists() {
                 let _ = std::fs::remove_file(&final_bin_path);
             }
-
             if std::fs::rename(&extracted_binary, &final_bin_path).is_err() {
                 std::fs::copy(&extracted_binary, &final_bin_path)?;
                 let _ = std::fs::remove_file(&extracted_binary);
             }
-
             set_executable_permissions(&final_bin_path)?;
-            let _ = std::fs::remove_dir_all(&temp_extract_dir);
+            let _ = std::fs::remove_dir_all(&temp_dir);
 
             native_rel_path = Some(format!("plugins/{}", bin_file_name));
         }
+
+        sanitize_path_component(&final_name, "plugin name")?;
+        sanitize_path_component(&final_ver, "plugin version")?;
 
         let execution_kind = if prefer_native && native_rel_path.is_some() {
             ExecutionKind::Native
         } else if wasm_rel_path.is_some() {
             ExecutionKind::Wasm
-        } else {
+        } else if native_rel_path.is_some() {
             ExecutionKind::Native
+        } else {
+            return Err(PackageError::InvalidSpec(
+                "Neither WASM nor Native binary was provided".to_string(),
+            ));
         };
 
-        let primary_binary_path = wasm_rel_path
-            .clone()
-            .or_else(|| native_rel_path.clone())
-            .ok_or_else(|| {
-                PackageError::InvalidSpec("Neither WASM nor Native binary was saved".to_string())
-            })?;
+        let primary_binary_path = match execution_kind {
+            ExecutionKind::Wasm => wasm_rel_path
+                .clone()
+                .ok_or_else(|| PackageError::InvalidSpec("WASM binary path missing".to_string()))?,
+            ExecutionKind::Native => native_rel_path.clone().ok_or_else(|| {
+                PackageError::InvalidSpec("Native binary path missing".to_string())
+            })?,
+        };
 
         let installed = InstalledPlugin {
             name: final_name.clone(),
@@ -475,6 +539,7 @@ impl PackageManager {
             sha256: sha256_hash,
             source: bundle.source,
             default_params: HashMap::new(),
+            manifest: Some(manifest),
         };
 
         let mut lockfile = self.load_lockfile();
@@ -548,7 +613,6 @@ impl PackageManager {
 
         let wasm_bytes = if let Some(url) = wasm_url {
             let bytes = client.get(url).send().await?.bytes().await?.to_vec();
-            println!("Downloaded wasm build {}", format_bytes(bytes.len()));
             Some(bytes)
         } else {
             None
@@ -556,12 +620,11 @@ impl PackageManager {
 
         let native_bytes = if let Some(url) = native_url {
             let bytes = client.get(url).send().await?.bytes().await?.to_vec();
-            println!("Downloaded native build {}", format_bytes(bytes.len()));
             Some(bytes)
         } else {
             if prefer_native {
                 eprintln!(
-                    "[warn] No native build available for host target triple '{}' on plugin '{}'. Falling back to WASM.",
+                    "[warn] No native build available for host triple '{}' on plugin '{}'. Falling back to WASM.",
                     triple, name
                 );
             }
@@ -573,14 +636,11 @@ impl PackageManager {
             version: Some(ver),
             wasm_bytes,
             native_bytes,
+            manifest_toml: None,
             source: "registry".to_string(),
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Skill management
-// ---------------------------------------------------------------------------
 
 pub struct SkillManager {
     base_dir: PathBuf,
@@ -832,6 +892,14 @@ impl SkillManager {
     }
 }
 
+fn is_native_archive_or_binary(target: &str) -> bool {
+    target.ends_with(".zip")
+        || target.ends_with(".tar.gz")
+        || target.ends_with(".tgz")
+        || (cfg!(windows) && target.ends_with(".exe"))
+        || (!target.ends_with(".wasm") && Path::new(target).is_file())
+}
+
 fn extract_skill_bundle(
     bytes: &[u8],
     dest_dir: &Path,
@@ -954,14 +1022,6 @@ fn current_target_triple() -> &'static str {
     std::env::consts::TARGET.as_str()
 }
 
-fn is_native_archive_or_binary(target: &str) -> bool {
-    target.ends_with(".zip")
-        || target.ends_with(".tar.gz")
-        || target.ends_with(".tgz")
-        || (cfg!(windows) && target.ends_with(".exe"))
-        || (!target.ends_with(".wasm") && Path::new(target).is_file())
-}
-
 fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, PackageError> {
     use std::io::Read;
     if bytes.starts_with(b"PK\x03\x04") {
@@ -1051,18 +1111,24 @@ fn extract_archive_or_binary(
 
 fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, PackageError> {
     if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries {
-            let entry = entry.ok().ok_or_else(|| PackageError::InvalidSpec("Failed to read directory".to_string()))?;
+        for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
                 if stem.eq_ignore_ascii_case(expected_name) {
                     return Ok(path);
                 }
+            } else if path.is_dir()
+                && let Ok(sub_exe) = find_executable_in_dir(&path, expected_name)
+            {
+                return Ok(sub_exe);
             }
         }
     }
-    Err(PackageError::InvalidSpec(format!("No executable found in '{}'", dir.display())))
+    Err(PackageError::InvalidSpec(format!(
+        "No executable found in '{}'",
+        dir.display()
+    )))
 }
 
 fn set_executable_permissions(_path: &Path) -> Result<(), std::io::Error> {
@@ -1083,21 +1149,4 @@ fn chrono_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-fn format_bytes(bytes: usize) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    let mut size = bytes as f64;
-    let mut unit_idx = 0;
-
-    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{} {}", bytes, UNITS[unit_idx])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_idx])
-    }
 }

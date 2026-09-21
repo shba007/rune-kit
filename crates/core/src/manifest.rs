@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum ExecutionKind {
     #[default]
     Wasm,
@@ -16,6 +16,79 @@ pub struct PluginInfo {
     pub version: String,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PluginManifest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    #[serde(default)]
+    pub dependencies: Dependencies,
+}
+
+impl PluginManifest {
+    pub fn from_toml(content: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(content)
+    }
+
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        let content = std::fs::read_to_string(path)?;
+        Self::from_toml(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Capabilities {
+    #[serde(default)]
+    pub network_hosts: Vec<String>,
+    #[serde(default)]
+    pub filesystem: Option<FilesystemCapability>,
+    #[serde(default)]
+    pub exec: ExecCapability,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FilesystemCapability {
+    #[serde(default = "default_scoped_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub root_param: Option<String>,
+}
+
+fn default_scoped_mode() -> String {
+    "scoped".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecCapability {
+    #[serde(default)]
+    pub allowed_binaries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Dependencies {
+    #[serde(default)]
+    pub binaries: HashMap<String, BinaryDependencySpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BinaryDependencySpec {
+    pub version: String,
+    #[serde(default)]
+    pub optional: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -38,6 +111,8 @@ pub struct InstalledPlugin {
     pub sha256: String,
     pub source: String,
     pub default_params: HashMap<String, String>,
+    #[serde(default)]
+    pub manifest: Option<PluginManifest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +125,7 @@ pub struct ToolDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceDefinition {
-    pub uri: String, // plugin-local, unqualified — rune-kit prefixes with rune://<namespace>/
+    pub uri: String,
     pub name: String,
     pub description: String,
     #[serde(rename = "mimeType", alias = "mime_type", default)]
@@ -82,8 +157,6 @@ pub struct RegistryPluginSummary {
     pub has_native: bool,
 }
 
-// A registry entry for a skill — a standalone published content artifact,
-// kept separate from the MCP plugin registry (its own `SkillLockfile`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrySkillSummary {
     pub name: String,
@@ -95,8 +168,6 @@ pub struct RegistrySkillSummary {
     pub tags: Vec<String>,
 }
 
-// A skill's on-disk lockfile entry: installed content (SKILL.md + files),
-// not executable code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledSkill {
     pub name: String,
@@ -111,7 +182,6 @@ pub struct InstalledSkill {
     pub files: Vec<SkillFile>,
 }
 
-/// Traits for skill table rendering
 pub trait SkillRow {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
@@ -156,7 +226,6 @@ pub struct SkillFile {
     pub sha256: Option<String>,
 }
 
-// A skill lockfile, separate from `Lockfile` — skills and plugins stay separate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillLockfile {
     pub version: u32,

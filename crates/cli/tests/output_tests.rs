@@ -16,6 +16,7 @@ fn sample_lockfile() -> Lockfile {
             sha256: "abc".to_string(),
             source: "file:///alpha.wasm".to_string(),
             default_params: HashMap::new(),
+            manifest: None,
         },
     );
     Lockfile {
