@@ -30,9 +30,7 @@ pub enum Commands {
         native: bool,
     },
     /// Uninstall an installed artifact (plugin or skill)
-    Uninstall {
-        name: String,
-    },
+    Uninstall { name: String },
     /// List installed artifacts (plugins and skills)
     List,
     /// List available artifacts in the remote registry

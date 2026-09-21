@@ -242,7 +242,11 @@ impl WasmPluginInstance {
 
         let mut allowed_hosts: Vec<String> = manifest.capabilities.network_hosts.clone();
         if let Some(param_hosts) = get_param("allowed_hosts") {
-            for h in param_hosts.split(',').map(str::trim).filter(|h| !h.is_empty()) {
+            for h in param_hosts
+                .split(',')
+                .map(str::trim)
+                .filter(|h| !h.is_empty())
+            {
                 allowed_hosts.push(h.to_string());
             }
         }

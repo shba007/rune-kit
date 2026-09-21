@@ -22,7 +22,9 @@ pub enum ProvisionError {
     NotFound(String),
     #[error("Binary '{0}' is not in capabilities.exec.allowed_binaries allowlist")]
     Unauthorized(String),
-    #[error("{name} is currently being provisioned ({progress_percent}% downloaded). Please retry in {eta_seconds} seconds.")]
+    #[error(
+        "{name} is currently being provisioned ({progress_percent}% downloaded). Please retry in {eta_seconds} seconds."
+    )]
     InProgress {
         name: String,
         progress_percent: u8,
@@ -187,7 +189,13 @@ impl BinaryProvisioner {
         let client = reqwest::Client::builder()
             .user_agent("rune-kit-provisioner")
             .build()?;
-        let bytes = client.get(&download_url).send().await?.bytes().await?.to_vec();
+        let bytes = client
+            .get(&download_url)
+            .send()
+            .await?
+            .bytes()
+            .await?
+            .to_vec();
 
         if let Some(ref expected_sha) = spec.sha256 {
             let actual_sha: String = Sha256::digest(&bytes)
