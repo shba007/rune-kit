@@ -1,6 +1,7 @@
 use crate::manifest::BinaryDependencySpec;
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use tar::Archive;
@@ -67,13 +68,26 @@ impl FileLock {
             std::fs::create_dir_all(parent)?;
         }
 
-        std::fs::OpenOptions::new()
+        match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&lock_path)
-            .map_err(|e| ProvisionError::LockError(e.to_string()))?;
-
-        Ok(Self { lock_path })
+        {
+            Ok(_) => Ok(Self { lock_path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(ProvisionError::InProgress {
+                    name: lock_path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("binary")
+                        .to_string(),
+                    progress_percent: 50,
+                    eta_seconds: 30,
+                })
+            }
+            Err(e) => Err(ProvisionError::LockError(e.to_string())),
+        }
     }
 }
 
@@ -149,6 +163,46 @@ impl BinaryProvisioner {
         }
 
         Err(ProvisionError::NotFound(name.to_string()))
+    }
+
+    /// Injects `<NAME>_PATH` environment variables and prepends the directory of all
+    /// provisioned allowlisted binaries into the target environment's `PATH`.
+    pub fn inject_env_vars(&self, allowed_binaries: &[String], envs: &mut HashMap<String, String>) {
+        let mut bin_dirs: Vec<String> = Vec::new();
+
+        for bin in allowed_binaries {
+            if let Ok(path) = self.resolve_binary(bin, allowed_binaries) {
+                let upper_key = format!("{}_PATH", bin.replace('-', "_").to_ascii_uppercase());
+                envs.insert(upper_key, path.to_string_lossy().to_string());
+
+                let lower_key = format!("{}_path", bin.replace('-', "_").to_ascii_lowercase());
+                envs.insert(lower_key, path.to_string_lossy().to_string());
+
+                if let Some(parent) = path.parent() {
+                    let parent_str = parent.to_string_lossy().to_string();
+                    if !bin_dirs.contains(&parent_str) {
+                        bin_dirs.push(parent_str);
+                    }
+                }
+            }
+        }
+
+        if !bin_dirs.is_empty() {
+            let current_path = envs
+                .get("PATH")
+                .cloned()
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+
+            let separator = if cfg!(windows) { ";" } else { ":" };
+            let joined_dirs = bin_dirs.join(separator);
+            let new_path = if current_path.is_empty() {
+                joined_dirs
+            } else {
+                format!("{}{}{}", joined_dirs, separator, current_path)
+            };
+            envs.insert("PATH".to_string(), new_path);
+        }
     }
 
     pub async fn provision_binary(

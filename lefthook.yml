@@ -1,9 +1,6 @@
-# lefthook.yml
-
 pre-commit:
   parallel: false
   commands:
-    # 1. Scan staged files with gitleaks if installed
     gitleaks:
       runner: bash -c
       run: 'command -v gitleaks >/dev/null 2>&1 && gitleaks detect --no-git --no-banner --verbose || true'

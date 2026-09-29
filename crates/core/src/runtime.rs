@@ -147,7 +147,7 @@ host_fn!(host_sidecar_exec(user_data: HostContext; input: String) -> Result<Stri
             )));
         }
 
-        let sidecar = NativeSidecar::new(&ctx.plugin_name, &sidecar_path, ctx.params.clone())
+        let sidecar = NativeSidecar::new(&ctx.plugin_name, &sidecar_path, ctx.params.clone(), None)
             .map_err(|e| extism::Error::msg(format!("Failed to spawn companion sidecar: {}", e)))?;
         *sidecar_lock = Some(sidecar);
     }
@@ -226,9 +226,13 @@ impl WasmPluginInstance {
     pub fn load_from_bytes(
         name: &str,
         bytes: Vec<u8>,
-        params: HashMap<String, String>,
+        mut params: HashMap<String, String>,
         manifest: PluginManifest,
     ) -> Result<Self, RuntimeError> {
+        let provisioner = BinaryProvisioner::new();
+        // Inject provisioned binaries and update PATH for guest execution
+        provisioner.inject_env_vars(&manifest.capabilities.exec.allowed_binaries, &mut params);
+
         let mut extism_manifest = Manifest::new([Wasm::data(bytes)]);
 
         let get_param = |key: &str| -> Option<String> {
@@ -285,7 +289,7 @@ impl WasmPluginInstance {
             plugin_name: name.to_string(),
             allowed_binaries: manifest.capabilities.exec.allowed_binaries.clone(),
             plugins_dir,
-            provisioner: BinaryProvisioner::new(),
+            provisioner,
             sidecar: Arc::new(Mutex::new(None)),
             params,
         };
@@ -410,6 +414,7 @@ pub struct NativeSidecar {
     pub name: String,
     binary_path: PathBuf,
     params: HashMap<String, String>,
+    manifest: PluginManifest,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     reader: Option<BufReader<ChildStdout>>,
@@ -421,6 +426,7 @@ impl NativeSidecar {
         name: &str,
         path: P,
         params: HashMap<String, String>,
+        manifest: Option<PluginManifest>,
     ) -> Result<Self, RuntimeError> {
         let binary_path = path.as_ref().to_path_buf();
         if !binary_path.exists() {
@@ -429,10 +435,32 @@ impl NativeSidecar {
             ));
         }
 
+        let resolved_manifest = manifest.unwrap_or_else(|| {
+            if let Some(parent) = binary_path.parent() {
+                let manifest_path = parent.join("plugin.toml");
+                if manifest_path.exists() {
+                    PluginManifest::from_file(&manifest_path).unwrap_or_default()
+                } else {
+                    PluginManifest::default()
+                }
+            } else {
+                PluginManifest::default()
+            }
+        });
+
+        let mut merged_params = params;
+        let provisioner = BinaryProvisioner::new();
+        // Inject provisioned binaries and update PATH for native process execution
+        provisioner.inject_env_vars(
+            &resolved_manifest.capabilities.exec.allowed_binaries,
+            &mut merged_params,
+        );
+
         let mut sidecar = Self {
             name: name.to_string(),
             binary_path,
-            params,
+            params: merged_params,
+            manifest: resolved_manifest,
             child: None,
             stdin: None,
             reader: None,
@@ -691,7 +719,7 @@ impl PluginInstance {
         path: P,
         params: HashMap<String, String>,
     ) -> Result<Self, RuntimeError> {
-        NativeSidecar::new(name, path, params).map(PluginInstance::Native)
+        NativeSidecar::new(name, path, params, None).map(PluginInstance::Native)
     }
 
     pub fn get_info(&mut self) -> Result<PluginInfo, RuntimeError> {

@@ -8,7 +8,16 @@ pub struct McpRouter {
 }
 
 pub fn namespace_resource_uri(namespace: &str, local_uri: &str) -> String {
-    format!("rune://{}/{}", namespace, local_uri)
+    let clean_local = if let Some(stripped) = local_uri.strip_prefix("rune://") {
+        if let Some((_old_ns, subpath)) = stripped.split_once('/') {
+            subpath
+        } else {
+            stripped
+        }
+    } else {
+        local_uri.trim_start_matches('/')
+    };
+    format!("rune://{}/{}", namespace, clean_local)
 }
 
 pub fn parse_resource_uri(uri: &str) -> Option<(&str, &str)> {
@@ -160,6 +169,12 @@ impl McpRouter {
                                 res.get("content").and_then(|c| c.as_array())
                             {
                                 json!(content_arr)
+                            } else if let Some(content_str) =
+                                res.get("content").and_then(|c| c.as_str())
+                            {
+                                json!([{ "type": "text", "text": content_str }])
+                            } else if let Some(text) = res.as_str() {
+                                json!([{ "type": "text", "text": text }])
                             } else {
                                 json!([{ "type": "text", "text": res.to_string() }])
                             };

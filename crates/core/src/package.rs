@@ -479,8 +479,12 @@ impl PackageManager {
             set_executable_permissions(&extracted_binary)?;
 
             if final_desc.is_none()
-                && let Ok(mut sidecar) =
-                    NativeSidecar::new(&final_name, &extracted_binary, probe_params.clone())
+                && let Ok(mut sidecar) = NativeSidecar::new(
+                    &final_name,
+                    &extracted_binary,
+                    probe_params.clone(),
+                    Some(manifest.clone()),
+                )
                 && let Ok(info) = sidecar.get_info()
             {
                 final_ver = bundle.version.clone().unwrap_or(info.version);

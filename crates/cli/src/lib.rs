@@ -499,5 +499,31 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn resolve_host_env_params() -> HashMap<String, String> {
-    std::env::vars().collect()
+    let mut params = HashMap::new();
+    const ALLOWED_EXPLICIT_VARS: &[&str] = &[
+        "ALLOWED_DIR",
+        "OUTPUT_DIR",
+        "OUTPUT_DIRECTORY",
+        "COOKIES_DIR",
+        "COOKIES_FILE",
+        "DEFAULT_TIMEZONE",
+        "REPO_PATH",
+        "MEMORY_FILE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+    ];
+
+    for (k, v) in std::env::vars() {
+        if let Some(suffix) = k.strip_prefix("RUNE_PARAM_") {
+            params.insert(suffix.to_ascii_lowercase(), v);
+        } else if ALLOWED_EXPLICIT_VARS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(&k))
+        {
+            params.insert(k.to_ascii_lowercase(), v);
+        }
+    }
+    params
 }
