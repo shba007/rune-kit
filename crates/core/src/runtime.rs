@@ -80,19 +80,28 @@ host_fn!(host_cmd_exec(user_data: HostContext; input: String) -> Result<String, 
 
     let mut prog_path = PathBuf::from(&req.program);
     if !prog_path.is_absolute() {
-        let candidate_sidecar = ctx.plugins_dir.join(format!("rune-{}-native", req.program));
-        let candidate_sidecar_exe = ctx.plugins_dir.join(format!("rune-{}-native.exe", req.program));
-        let candidate = ctx.plugins_dir.join(&req.program);
-        let candidate_exe = ctx.plugins_dir.join(format!("{}.exe", req.program));
+        let clean_prog = req.program.to_ascii_lowercase();
+        let native_prog = if clean_prog.starts_with("rune-") {
+            format!("{}-native", clean_prog)
+        } else {
+            format!("rune-{}-native", clean_prog)
+        };
+        let stripped_prog = clean_prog.strip_prefix("rune-").unwrap_or(&clean_prog);
+        let stripped_native = format!("{}-native", stripped_prog);
 
-        if candidate_sidecar.exists() {
-            prog_path = candidate_sidecar;
-        } else if candidate_sidecar_exe.exists() {
-            prog_path = candidate_sidecar_exe;
-        } else if candidate.exists() {
-            prog_path = candidate;
-        } else if candidate_exe.exists() {
-            prog_path = candidate_exe;
+        let candidates = [
+            ctx.plugins_dir.join(&clean_prog),
+            ctx.plugins_dir.join(format!("{}.exe", clean_prog)),
+            ctx.plugins_dir.join(&native_prog),
+            ctx.plugins_dir.join(format!("{}.exe", native_prog)),
+            ctx.plugins_dir.join(&stripped_native),
+            ctx.plugins_dir.join(format!("{}.exe", stripped_native)),
+            ctx.plugins_dir.join(stripped_prog),
+            ctx.plugins_dir.join(format!("{}.exe", stripped_prog)),
+        ];
+
+        if let Some(found) = candidates.iter().find(|p| p.exists()) {
+            prog_path = found.clone();
         } else if let Ok(prov_path) = ctx.provisioner.resolve_binary(&req.program, &ctx.allowed_binaries) {
             prog_path = prov_path;
         }
@@ -131,21 +140,32 @@ host_fn!(host_sidecar_exec(user_data: HostContext; input: String) -> Result<Stri
         .map_err(|_| extism::Error::msg("Failed to lock sidecar mutex"))?;
 
     if sidecar_lock.is_none() {
-        let sidecar_name = format!("rune-{}-native", ctx.plugin_name);
-        let mut sidecar_path = ctx.plugins_dir.join(&sidecar_name);
-        if !sidecar_path.exists() {
-            sidecar_path = ctx.plugins_dir.join(format!("{}.exe", sidecar_name));
-        }
-        if !sidecar_path.exists() {
-            sidecar_path = ctx.plugins_dir.join(&ctx.plugin_name);
-        }
+        let clean_name = ctx.plugin_name.to_ascii_lowercase();
+        let native_name = if clean_name.starts_with("rune-") {
+            format!("{}-native", clean_name)
+        } else {
+            format!("rune-{}-native", clean_name)
+        };
+        let stripped_name = clean_name.strip_prefix("rune-").unwrap_or(&clean_name);
+        let stripped_native = format!("{}-native", stripped_name);
 
-        if !sidecar_path.exists() {
-            return Err(extism::Error::msg(format!(
-                "Companion native sidecar '{}' not found in plugin directory",
-                sidecar_name
-            )));
-        }
+        let candidates = [
+            ctx.plugins_dir.join(&native_name),
+            ctx.plugins_dir.join(format!("{}.exe", native_name)),
+            ctx.plugins_dir.join(&stripped_native),
+            ctx.plugins_dir.join(format!("{}.exe", stripped_native)),
+            ctx.plugins_dir.join(&clean_name),
+            ctx.plugins_dir.join(format!("{}.exe", clean_name)),
+            ctx.plugins_dir.join(stripped_name),
+            ctx.plugins_dir.join(format!("{}.exe", stripped_name)),
+        ];
+
+        let sidecar_path = candidates.iter().find(|p| p.exists()).cloned().ok_or_else(|| {
+            extism::Error::msg(format!(
+                "Companion native sidecar for '{}' not found in plugin directory",
+                ctx.plugin_name
+            ))
+        })?;
 
         let sidecar = NativeSidecar::new(&ctx.plugin_name, &sidecar_path, ctx.params.clone(), None)
             .map_err(|e| extism::Error::msg(format!("Failed to spawn companion sidecar: {}", e)))?;

@@ -83,7 +83,11 @@ impl Table {
                 &widths,
             ),
         );
-        out.push("-".repeat(fixed_total));
+
+        let total_table_width =
+            widths.iter().sum::<usize>() + sep.len() * widths.len().saturating_sub(1);
+        out.push("-".repeat(total_table_width));
+
         for row in &self.rows {
             out.push(self.format_row(row, &widths));
         }
@@ -221,8 +225,8 @@ mod tests {
             .column(Column::fixed("STATUS", 12))
             .column(Column::flexible("DESCRIPTION", 40));
         let rows = t.format_rows();
-        // 16+10+14+12 = 52 fixed, +4 seps = 56; flex = 44
         assert_eq!(rows[0].len(), 100);
+        assert_eq!(rows[1].len(), 100);
     }
 
     #[test]
@@ -240,10 +244,8 @@ mod tests {
             .column(Column::fixed("STATUS", 12))
             .column(Column::flexible("DESCRIPTION", 40));
         let rows = t.format_rows();
-        // "DESCRIPTION" (11 chars) fits in 44-char flexible column without truncation
         let row = &rows[0];
         assert_eq!(row.len(), 100);
-        // The flexible column starts at position 56 (after all fixed columns + separators)
         let flex_start = 16 + 1 + 10 + 1 + 14 + 1 + 12 + 1; // 56
         assert_eq!(row[flex_start..].len(), 44);
         assert_eq!(&row[flex_start..flex_start + 11], "DESCRIPTION");

@@ -465,50 +465,62 @@ impl PackageManager {
 
         let mut native_rel_path = None;
         if let Some(ref native_bytes) = bundle.native_bytes {
-            if sha256_hash.is_empty() {
-                sha256_hash = Sha256::digest(native_bytes)
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
+            let extract_res = (|| -> Result<String, PackageError> {
+                let temp_dir = plugins_dir.join(format!(".tmp-native-{}", chrono_timestamp()));
+                std::fs::create_dir_all(&temp_dir)?;
+
+                let extracted_binary =
+                    extract_archive_or_binary(native_bytes, &temp_dir, &final_name)?;
+                set_executable_permissions(&extracted_binary)?;
+
+                if final_desc.is_none()
+                    && let Ok(mut sidecar) = NativeSidecar::new(
+                        &final_name,
+                        &extracted_binary,
+                        probe_params.clone(),
+                        Some(manifest.clone()),
+                    )
+                    && let Ok(info) = sidecar.get_info()
+                {
+                    final_ver = bundle.version.clone().unwrap_or(info.version);
+                    final_desc = info.description;
+                }
+
+                let bin_file_name = extracted_binary
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&final_name)
+                    .to_string();
+
+                let final_bin_path = plugins_dir.join(&bin_file_name);
+                if final_bin_path.exists() {
+                    let _ = std::fs::remove_file(&final_bin_path);
+                }
+                if std::fs::rename(&extracted_binary, &final_bin_path).is_err() {
+                    std::fs::copy(&extracted_binary, &final_bin_path)?;
+                    let _ = std::fs::remove_file(&extracted_binary);
+                }
+                set_executable_permissions(&final_bin_path)?;
+                let _ = std::fs::remove_dir_all(&temp_dir);
+
+                Ok(format!("plugins/{}", bin_file_name))
+            })();
+
+            match extract_res {
+                Ok(rel_path) => {
+                    native_rel_path = Some(rel_path);
+                }
+                Err(err) => {
+                    if wasm_rel_path.is_some() && !prefer_native {
+                        eprintln!(
+                            "[warn] Optional native binary extraction failed ({}). Continuing with WASM build.",
+                            err
+                        );
+                    } else {
+                        return Err(err);
+                    }
+                }
             }
-
-            let temp_dir = plugins_dir.join(format!(".tmp-native-{}", chrono_timestamp()));
-            std::fs::create_dir_all(&temp_dir)?;
-
-            let extracted_binary = extract_archive_or_binary(native_bytes, &temp_dir, &final_name)?;
-            set_executable_permissions(&extracted_binary)?;
-
-            if final_desc.is_none()
-                && let Ok(mut sidecar) = NativeSidecar::new(
-                    &final_name,
-                    &extracted_binary,
-                    probe_params.clone(),
-                    Some(manifest.clone()),
-                )
-                && let Ok(info) = sidecar.get_info()
-            {
-                final_ver = bundle.version.clone().unwrap_or(info.version);
-                final_desc = info.description;
-            }
-
-            let bin_file_name = extracted_binary
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&final_name)
-                .to_string();
-
-            let final_bin_path = plugins_dir.join(&bin_file_name);
-            if final_bin_path.exists() {
-                let _ = std::fs::remove_file(&final_bin_path);
-            }
-            if std::fs::rename(&extracted_binary, &final_bin_path).is_err() {
-                std::fs::copy(&extracted_binary, &final_bin_path)?;
-                let _ = std::fs::remove_file(&extracted_binary);
-            }
-            set_executable_permissions(&final_bin_path)?;
-            let _ = std::fs::remove_dir_all(&temp_dir);
-
-            native_rel_path = Some(format!("plugins/{}", bin_file_name));
         }
 
         sanitize_path_component(&final_name, "plugin name")?;
@@ -698,21 +710,29 @@ impl SkillManager {
 
         let mut results = Vec::new();
         if let Some(map) = index.as_object() {
-            for (name, skill) in map {
-                let latest = skill
+            for (name, item) in map {
+                // Strictly filter for skill entries; plugin packages in rune-tools do not qualify as skills
+                let is_skill = item.get("type").and_then(|v| v.as_str()) == Some("skill")
+                    || item.get("kind").and_then(|v| v.as_str()) == Some("skill");
+
+                if !is_skill {
+                    continue;
+                }
+
+                let latest = item
                     .get("latest")
                     .and_then(|v| v.as_str())
                     .unwrap_or("0.1.0")
                     .to_string();
-                let description = skill
+                let description = item
                     .get("description")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
-                let author = skill
+                let author = item
                     .get("author")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
-                let tags = skill
+                let tags = item
                     .get("tags")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
@@ -721,6 +741,7 @@ impl SkillManager {
                             .collect()
                     })
                     .unwrap_or_default();
+
                 results.push(RegistrySkillSummary {
                     name: name.clone(),
                     latest,
@@ -738,10 +759,20 @@ impl SkillManager {
         let skills_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json";
         let client = reqwest::Client::new();
         let index: serde_json::Value = client.get(skills_url).send().await?.json().await?;
-        index
+        let entry = index
             .get(name)
             .cloned()
-            .ok_or_else(|| PackageError::NotFound(name.to_string()))
+            .ok_or_else(|| PackageError::NotFound(name.to_string()))?;
+
+        let is_skill = entry.get("type").and_then(|v| v.as_str()) == Some("skill")
+            || entry.get("kind").and_then(|v| v.as_str()) == Some("skill");
+        if !is_skill {
+            return Err(PackageError::NotFound(format!(
+                "'{}' is not a skill in the registry",
+                name
+            )));
+        }
+        Ok(entry)
     }
 
     async fn resolve_skill_artifact(
@@ -1052,33 +1083,74 @@ fn current_target_triple() -> &'static str {
 
 fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, PackageError> {
     use std::io::Read;
+
+    let clean_binary = binary_name.to_ascii_lowercase();
+    let expected_names = [clean_binary.clone(), format!("{}.exe", clean_binary)];
+
+    let matches_binary = |fname: &str| -> bool {
+        let lower = fname.to_ascii_lowercase().replace('\\', "/");
+        let filename = lower.split('/').next_back().unwrap_or("");
+        expected_names.iter().any(|target| filename == target)
+    };
+
     if bytes.starts_with(b"PK\x03\x04") {
         let reader = Cursor::new(bytes);
         let mut zip = zip::ZipArchive::new(reader)
             .map_err(|e| PackageError::InvalidSpec(format!("Zip read error: {}", e)))?;
+
         for i in 0..zip.len() {
             let mut file = zip
                 .by_index(i)
                 .map_err(|e| PackageError::InvalidSpec(format!("Zip entry error: {}", e)))?;
-            let fname = file.name().to_string();
-            if fname == binary_name || fname.ends_with(&format!("/{}", binary_name)) {
+            if matches_binary(file.name()) {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf)?;
                 return Ok(buf);
             }
         }
+
+        // Fallback: single file in archive
+        let mut non_dir_files = Vec::new();
+        for i in 0..zip.len() {
+            let file = zip
+                .by_index(i)
+                .map_err(|e| PackageError::InvalidSpec(format!("Zip entry error: {}", e)))?;
+            if !file.is_dir() {
+                non_dir_files.push(i);
+            }
+        }
+        if non_dir_files.len() == 1 {
+            let mut file = zip
+                .by_index(non_dir_files[0])
+                .map_err(|e| PackageError::InvalidSpec(format!("Zip entry error: {}", e)))?;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)?;
+            return Ok(buf);
+        }
     } else if bytes.starts_with(b"\x1f\x8b") {
         let gz = GzDecoder::new(bytes);
         let mut archive = Archive::new(gz);
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?;
-            let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if fname == binary_name {
+        let mut entries = archive.entries()?;
+        let mut single_buf = None;
+        let mut file_count = 0;
+
+        while let Some(entry_res) = entries.next() {
+            let mut entry = entry_res?;
+            let path_str = entry.path()?.to_string_lossy().to_string();
+            let is_file = entry.header().entry_type().is_file();
+
+            if is_file {
+                file_count += 1;
                 let mut buf = Vec::new();
                 entry.read_to_end(&mut buf)?;
-                return Ok(buf);
+                if matches_binary(&path_str) {
+                    return Ok(buf);
+                }
+                single_buf = Some(buf);
             }
+        }
+        if file_count == 1 && single_buf.is_some() {
+            return Ok(single_buf.unwrap());
         }
     } else {
         return Ok(bytes.to_vec());
@@ -1138,25 +1210,96 @@ fn extract_archive_or_binary(
 }
 
 fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, PackageError> {
+    let mut candidates = Vec::new();
+    collect_executables_in_dir(dir, &mut candidates)?;
+
+    let clean_name = expected_name.to_ascii_lowercase();
+    let native_name = format!("{}-native", clean_name);
+    let stripped_name = clean_name
+        .strip_prefix("rune-")
+        .unwrap_or(&clean_name)
+        .to_string();
+    let stripped_native = format!("{}-native", stripped_name);
+
+    // 1. Exact stem match
+    for c in &candidates {
+        let stem = c
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if stem == clean_name {
+            return Ok(c.clone());
+        }
+    }
+
+    // 2. Native sidecar stem match (e.g. "rune-browser-native", "browser-native", "browser")
+    for c in &candidates {
+        let stem = c
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if stem == native_name || stem == stripped_native || stem == stripped_name {
+            return Ok(c.clone());
+        }
+    }
+
+    // 3. Starts with match (e.g. "rune-browser-x86_64-pc-windows-msvc")
+    for c in &candidates {
+        let stem = c
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if stem.starts_with(&clean_name) || stem.starts_with(&stripped_name) {
+            return Ok(c.clone());
+        }
+    }
+
+    // 4. Fallback: single executable in archive
+    if candidates.len() == 1 {
+        return Ok(candidates[0].clone());
+    }
+
+    Err(PackageError::InvalidSpec(format!(
+        "No executable found in '{}' matching '{}'",
+        dir.display(),
+        expected_name
+    )))
+}
+
+fn collect_executables_in_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if stem.eq_ignore_ascii_case(expected_name) {
-                    return Ok(path);
+            if path.is_dir() {
+                collect_executables_in_dir(&path, out)?;
+            } else if path.is_file() {
+                #[cfg(windows)]
+                {
+                    if path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("exe"))
+                        .unwrap_or(false)
+                    {
+                        out.push(path);
+                    }
                 }
-            } else if path.is_dir()
-                && let Ok(sub_exe) = find_executable_in_dir(&path, expected_name)
-            {
-                return Ok(sub_exe);
+                #[cfg(not(windows))]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = path.metadata() {
+                        if meta.permissions().mode() & 0o111 != 0 {
+                            out.push(path);
+                        }
+                    }
+                }
             }
         }
     }
-    Err(PackageError::InvalidSpec(format!(
-        "No executable found in '{}'",
-        dir.display()
-    )))
+    Ok(())
 }
 
 fn set_executable_permissions(_path: &Path) -> Result<(), std::io::Error> {

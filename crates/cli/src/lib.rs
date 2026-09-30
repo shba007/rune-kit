@@ -160,12 +160,20 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             version,
             native,
         } => {
-            let is_skill = target.ends_with(".md")
+            let is_file_or_hash_skill = target.ends_with(".md")
                 || target.ends_with(".txt")
                 || target.ends_with(".rst")
                 || target.ends_with(".markdown")
                 || target.contains("__")
                 || target.starts_with('#');
+
+            let is_skill = is_file_or_hash_skill || {
+                if let Ok(skills) = sm.fetch_skills().await {
+                    skills.iter().any(|s| s.name.eq_ignore_ascii_case(&target))
+                } else {
+                    false
+                }
+            };
 
             if is_skill {
                 let installed = sm.install_skill(&target, version).await?;
@@ -279,6 +287,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let skill_available = sm.fetch_skills().await?;
+            let skill_lockfile = sm.load_skills_lockfile();
             if !skill_available.is_empty() {
                 println!(
                     "\nAvailable Skills ({} in registry):",
@@ -290,9 +299,14 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .column(Column::fixed("LATEST", 10))
                     .column(Column::flexible("DESCRIPTION", 30));
                 for s in &skill_available {
+                    let current = skill_lockfile
+                        .skills
+                        .get(&s.name)
+                        .map(|e| e.version.as_str())
+                        .unwrap_or("-");
                     t.add_row(vec![
                         s.name.clone(),
-                        s.latest.clone(),
+                        current.to_string(),
                         s.latest.clone(),
                         s.description.clone().unwrap_or_else(|| "-".to_string()),
                     ]);
@@ -354,20 +368,37 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
+            let lockfile = pm.load_lockfile();
+            let skill_lockfile = sm.load_skills_lockfile();
+
             let mut t = Table::new(88)
-                .column(Column::fixed("TYPE", 10))
+                .column(Column::fixed("TYPE", 8))
                 .column(Column::fixed("NAME", 20))
                 .column(Column::fixed("CURRENT", 10))
                 .column(Column::fixed("LATEST", 10))
-                .column(Column::flexible("DESCRIPTION", 30));
+                .column(Column::flexible("DESCRIPTION", 36));
 
             for item in &matches {
-                let short_desc = truncate_display(&item.description, 28);
+                let current = if item.ty == "skill" {
+                    skill_lockfile
+                        .skills
+                        .get(&item.name)
+                        .map(|s| s.version.as_str())
+                        .unwrap_or("-")
+                } else {
+                    lockfile
+                        .plugins
+                        .get(&item.name)
+                        .map(|p| p.version.as_str())
+                        .unwrap_or("-")
+                };
+
+                let short_desc = truncate_display(&item.description, 34);
                 t.add_row(vec![
                     item.ty.clone(),
                     item.name.clone(),
+                    current.to_string(),
                     item.latest.clone(),
-                    item.description.clone(),
                     short_desc,
                 ]);
             }

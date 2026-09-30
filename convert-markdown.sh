@@ -51,7 +51,8 @@ EXTRA_IGNORES=(
     "skills"
     "tasks"
     "lefthook.yml"
-    "CHANGELOG"
+    "CHANGELOG*"
+    ".gitleaksignore"
     # "package.json"
     # "Cargo.toml"
 )

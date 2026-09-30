@@ -342,21 +342,70 @@ fn extract_pure_rust(bytes: &[u8], dest_dir: &Path) -> Result<(), ProvisionError
 }
 
 fn find_executable(dir: &Path, expected_name: &str) -> Result<PathBuf, ProvisionError> {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if stem.eq_ignore_ascii_case(expected_name) {
-                    return Ok(path);
+    let mut candidates = Vec::new();
+
+    fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.is_file() {
+                    #[cfg(windows)]
+                    {
+                        if path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .map(|e| e.eq_ignore_ascii_case("exe"))
+                            .unwrap_or(false)
+                        {
+                            out.push(path);
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(meta) = path.metadata() {
+                            if meta.permissions().mode() & 0o111 != 0 {
+                                out.push(path);
+                            }
+                        }
+                    }
                 }
-            } else if path.is_dir()
-                && let Ok(sub_exe) = find_executable(&path, expected_name)
-            {
-                return Ok(sub_exe);
             }
         }
     }
+
+    collect(dir, &mut candidates);
+
+    let clean = expected_name.to_ascii_lowercase();
+
+    for c in &candidates {
+        let stem = c
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if stem == clean {
+            return Ok(c.clone());
+        }
+    }
+
+    for c in &candidates {
+        let stem = c
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if stem.starts_with(&clean) {
+            return Ok(c.clone());
+        }
+    }
+
+    if candidates.len() == 1 {
+        return Ok(candidates[0].clone());
+    }
+
     Err(ProvisionError::NotFound(format!(
         "Executable '{}' not found in extracted archive",
         expected_name
