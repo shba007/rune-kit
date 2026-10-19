@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings on every platform (they run on Linux/macOS).
+*.sh text eol=lf
+.cargo-husky/hooks/* text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf

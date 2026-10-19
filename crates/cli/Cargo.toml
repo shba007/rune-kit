@@ -17,3 +17,8 @@ tokio.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 dirs.workspace = true
+
+[dev-dependencies.cargo-husky]
+version = "1"
+default-features = false
+features = ["user-hooks"]
