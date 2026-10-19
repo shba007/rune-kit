@@ -8,9 +8,12 @@ on:
   push:
     branches:
       - develop
+  pull_request:
+    branches:
+      - develop
+      - main
 
 env:
-  DATABASE_URL: ${{ vars.DATABASE_URL }}
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -38,7 +41,7 @@ jobs:
 
       # 2. Fast binary installer for CLI tools (downloads prebuilt binaries, zero compile time)
       - name: 📦 Install Release Tooling
-        uses: taiki-e/install-action@v2.87.17
+        uses: taiki-e/install-action@v2.87.28
         with:
           tool: cocogitto, cargo-edit
 
@@ -50,14 +53,13 @@ jobs:
       - name: ⚙️ Build Artifact
         run: cargo build --release --workspace
 
-      # 5. Test Code (uncomment when ready)
-      # - name: ✅ Test Code
-      #   run: cargo test --workspace
+      # 5. Test Code
+      - name: ✅ Test Code
+        run: cargo test --workspace
 
       # 6. Lint Code (Clippy)
       - name: 🧹 Lint Code
-        run: cargo clippy --workspace --all-targets -- -D warnings || echo "Linting
-          failed, but continuing"
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # 7. Format Code
       - name: 🧼 Format Code
@@ -65,12 +67,14 @@ jobs:
 
       # 8. Auto-commit any formatting changes made by rustfmt
       - name: 🤖 AutoFix Code
+        if: github.event_name == 'push'
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: 'chore: apply code fixes [skip ci]'
 
       # 9. Bump SemVer & Extract Changelog via Conventional Commits
       - name: 🏷️ Bump Version
+        if: github.event_name == 'push'
         id: bump_version
         run: |
           # Configure git identity for cocogitto dry-run / bump
@@ -93,6 +97,7 @@ jobs:
 
       # 10. Open or update Release PR
       - name: 🔀 Create or Update Pull Request
+        if: github.event_name == 'push'
         uses: peter-evans/create-pull-request@v8
         with:
           commit-message: 'ci(release): update version'

@@ -420,7 +420,7 @@ impl PackageManager {
             }
         }
 
-        let mut probe_params: HashMap<String, String> = std::env::vars().collect();
+        let mut probe_params: HashMap<String, String> = crate::runtime::resolve_host_env_params();
         probe_params.entry("allowed_hosts".to_string()).or_default();
 
         let (mut final_name, mut final_ver, mut final_desc) = (
@@ -970,7 +970,7 @@ fn extract_skill_bundle(
     } else if bytes.starts_with(b"\x1f\x8b") {
         let gz = GzDecoder::new(bytes);
         let mut archive = Archive::new(gz);
-        archive.unpack(dest_dir)?;
+        unpack_tar_safe(&mut archive, dest_dir)?;
         Ok(dest_dir.to_path_buf())
     } else {
         let file_name = default_name.to_string();
@@ -1130,11 +1130,11 @@ fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, Pac
     } else if bytes.starts_with(b"\x1f\x8b") {
         let gz = GzDecoder::new(bytes);
         let mut archive = Archive::new(gz);
-        let mut entries = archive.entries()?;
+        let entries = archive.entries()?;
         let mut single_buf = None;
         let mut file_count = 0;
 
-        while let Some(entry_res) = entries.next() {
+        for entry_res in entries {
             let mut entry = entry_res?;
             let path_str = entry.path()?.to_string_lossy().to_string();
             let is_file = entry.header().entry_type().is_file();
@@ -1149,8 +1149,10 @@ fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, Pac
                 single_buf = Some(buf);
             }
         }
-        if file_count == 1 && single_buf.is_some() {
-            return Ok(single_buf.unwrap());
+        if file_count == 1
+            && let Some(buf) = single_buf
+        {
+            return Ok(buf);
         }
     } else {
         return Ok(bytes.to_vec());
@@ -1160,6 +1162,54 @@ fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, Pac
         "Binary '{}' not found inside downloaded archive",
         binary_name
     )))
+}
+
+fn unpack_tar_safe<R: std::io::Read>(
+    archive: &mut Archive<R>,
+    dest_dir: &Path,
+) -> Result<(), PackageError> {
+    for entry_res in archive.entries()? {
+        let mut entry = entry_res?;
+        let path = entry.path()?;
+
+        let mut normalized = PathBuf::new();
+        for comp in path.components() {
+            match comp {
+                std::path::Component::Normal(c) => normalized.push(c),
+                std::path::Component::CurDir => {}
+                _ => {
+                    return Err(PackageError::InvalidSpec(format!(
+                        "Path traversal detected in tar archive: {:?}",
+                        path
+                    )));
+                }
+            }
+        }
+
+        if normalized.as_os_str().is_empty() {
+            continue;
+        }
+
+        let outpath = dest_dir.join(&normalized);
+        if entry.header().entry_type().is_dir() {
+            std::fs::create_dir_all(&outpath)?;
+        } else {
+            if let Some(parent) = outpath.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut outfile = std::fs::File::create(&outpath)?;
+            std::io::copy(&mut entry, &mut outfile)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(mode) = entry.header().mode() {
+                    let _ =
+                        std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn extract_archive_or_binary(
@@ -1194,7 +1244,7 @@ fn extract_archive_or_binary(
     } else if bytes.starts_with(b"\x1f\x8b") {
         let gz = GzDecoder::new(bytes);
         let mut archive = Archive::new(gz);
-        archive.unpack(dest_dir)?;
+        unpack_tar_safe(&mut archive, dest_dir)?;
     } else {
         let binary_file_name = if cfg!(windows) {
             format!("{}.exe", default_name)

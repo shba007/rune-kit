@@ -329,9 +329,55 @@ fn extract_pure_rust(bytes: &[u8], dest_dir: &Path) -> Result<(), ProvisionError
     } else if bytes.starts_with(b"\x1f\x8b") {
         let gz = GzDecoder::new(bytes);
         let mut archive = Archive::new(gz);
-        archive
-            .unpack(dest_dir)
-            .map_err(|e| ProvisionError::Extraction(format!("Tar-GZ error: {}", e)))?;
+        for entry_res in archive
+            .entries()
+            .map_err(|e| ProvisionError::Extraction(format!("Tar-GZ error: {}", e)))?
+        {
+            let mut entry = entry_res
+                .map_err(|e| ProvisionError::Extraction(format!("Tar-GZ entry error: {}", e)))?;
+            let path = entry
+                .path()
+                .map_err(|e| ProvisionError::Extraction(format!("Tar-GZ path error: {}", e)))?;
+
+            let mut normalized = PathBuf::new();
+            for comp in path.components() {
+                match comp {
+                    std::path::Component::Normal(c) => normalized.push(c),
+                    std::path::Component::CurDir => {}
+                    _ => {
+                        return Err(ProvisionError::Extraction(format!(
+                            "Path traversal detected in tar archive: {:?}",
+                            path
+                        )));
+                    }
+                }
+            }
+
+            if normalized.as_os_str().is_empty() {
+                continue;
+            }
+
+            let outpath = dest_dir.join(&normalized);
+            if entry.header().entry_type().is_dir() {
+                std::fs::create_dir_all(&outpath)?;
+            } else {
+                if let Some(parent) = outpath.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut outfile = std::fs::File::create(&outpath)?;
+                std::io::copy(&mut entry, &mut outfile)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(mode) = entry.header().mode() {
+                        let _ = std::fs::set_permissions(
+                            &outpath,
+                            std::fs::Permissions::from_mode(mode),
+                        );
+                    }
+                }
+            }
+        }
         Ok(())
     } else {
         let default_name = "binary";

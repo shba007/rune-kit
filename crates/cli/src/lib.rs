@@ -84,9 +84,8 @@ use crate::output::{
 };
 use rune_kit_core::{
     ExecutionKind, McpRouter, PackageManager, PluginInstance, PluginUpdateStatus, SkillManager,
-    is_newer_version,
+    is_newer_version, resolve_host_env_params,
 };
-use std::collections::HashMap;
 
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -527,34 +526,4 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-fn resolve_host_env_params() -> HashMap<String, String> {
-    let mut params = HashMap::new();
-    const ALLOWED_EXPLICIT_VARS: &[&str] = &[
-        "ALLOWED_DIR",
-        "OUTPUT_DIR",
-        "OUTPUT_DIRECTORY",
-        "COOKIES_DIR",
-        "COOKIES_FILE",
-        "DEFAULT_TIMEZONE",
-        "REPO_PATH",
-        "MEMORY_FILE",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-    ];
-
-    for (k, v) in std::env::vars() {
-        if let Some(suffix) = k.strip_prefix("RUNE_PARAM_") {
-            params.insert(suffix.to_ascii_lowercase(), v);
-        } else if ALLOWED_EXPLICIT_VARS
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(&k))
-        {
-            params.insert(k.to_ascii_lowercase(), v);
-        }
-    }
-    params
 }

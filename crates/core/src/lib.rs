@@ -13,4 +13,6 @@ pub use manifest::{
 pub use package::{PackageError, PackageManager, SkillManager, is_newer_version};
 pub use protocol::McpRouter;
 pub use provision::{BinaryProvisioner, ProvisionError};
-pub use runtime::{NativeSidecar, PluginInstance, RuntimeError, WasmPluginInstance};
+pub use runtime::{
+    NativeSidecar, PluginInstance, RuntimeError, WasmPluginInstance, resolve_host_env_params,
+};

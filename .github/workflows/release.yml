@@ -39,7 +39,7 @@ jobs:
       # stop deploy.yml from ever running.
       - name: 📝 Create GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             --title "${{ steps.version.outputs.tag }}" \

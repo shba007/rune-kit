@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -113,16 +113,66 @@ host_fn!(host_cmd_exec(user_data: HostContext; input: String) -> Result<String, 
     if let Some(ref cwd) = req.cwd {
         cmd.current_dir(cwd);
     }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
-    let output = cmd.output().map_err(|e| extism::Error::msg(format!("Execution failed: {}", e)))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| extism::Error::msg(format!("Execution failed: {}", e)))?;
 
-    let resp = CmdExecResponse {
-        success: output.status.success(),
-        exit_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    };
-    Ok(serde_json::to_string(&resp)?)
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let child_arc = Arc::new(Mutex::new(child));
+    let child_clone = Arc::clone(&child_arc);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        if let Some(mut s) = stdout {
+            let _ = std::io::Read::read_to_end(&mut s, &mut out);
+        }
+        if let Some(mut s) = stderr {
+            let _ = std::io::Read::read_to_end(&mut s, &mut err);
+        }
+        let status = child_clone
+            .lock()
+            .map(|mut c| c.wait())
+            .unwrap_or_else(|_| Err(std::io::Error::other("Lock failed")));
+        let _ = tx.send((status, out, err));
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+        Ok((status_res, stdout_bytes, stderr_bytes)) => {
+            let (success, exit_code) = match status_res {
+                Ok(status) => (status.success(), status.code()),
+                Err(_) => (false, None),
+            };
+            let resp = CmdExecResponse {
+                success,
+                exit_code,
+                stdout: String::from_utf8_lossy(&stdout_bytes).to_string(),
+                stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
+            };
+            Ok(serde_json::to_string(&resp)?)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            if let Ok(mut child) = child_arc.lock() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            let resp = CmdExecResponse {
+                success: false,
+                exit_code: Some(124),
+                stdout: String::new(),
+                stderr: "Execution timed out after 60 seconds".to_string(),
+            };
+            Ok(serde_json::to_string(&resp)?)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(extism::Error::msg("Subprocess output channel closed unexpectedly"))
+        }
+    }
 });
 
 host_fn!(host_sidecar_exec(user_data: HostContext; input: String) -> Result<String, extism::Error> {
@@ -430,6 +480,36 @@ impl WasmPluginInstance {
     }
 }
 
+pub fn resolve_host_env_params() -> HashMap<String, String> {
+    let mut params = HashMap::new();
+    const ALLOWED_EXPLICIT_VARS: &[&str] = &[
+        "ALLOWED_DIR",
+        "OUTPUT_DIR",
+        "OUTPUT_DIRECTORY",
+        "COOKIES_DIR",
+        "COOKIES_FILE",
+        "DEFAULT_TIMEZONE",
+        "REPO_PATH",
+        "MEMORY_FILE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+    ];
+
+    for (k, v) in std::env::vars() {
+        if let Some(suffix) = k.strip_prefix("RUNE_PARAM_") {
+            params.insert(suffix.to_ascii_lowercase(), v);
+        } else if ALLOWED_EXPLICIT_VARS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(&k))
+        {
+            params.insert(k.to_ascii_lowercase(), v);
+        }
+    }
+    params
+}
+
 pub struct NativeSidecar {
     pub name: String,
     binary_path: PathBuf,
@@ -438,7 +518,7 @@ pub struct NativeSidecar {
     manifest: PluginManifest,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
-    reader: Option<BufReader<ChildStdout>>,
+    rx: Option<std::sync::mpsc::Receiver<Result<String, std::io::Error>>>,
     next_id: u64,
 }
 
@@ -484,7 +564,7 @@ impl NativeSidecar {
             manifest: resolved_manifest,
             child: None,
             stdin: None,
-            reader: None,
+            rx: None,
             next_id: 1,
         };
 
@@ -515,9 +595,30 @@ impl NativeSidecar {
             RuntimeError::Execution("Failed to open child process stdout".to_string())
         })?;
 
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(Ok(line.clone())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
+
         self.child = Some(child);
         self.stdin = Some(stdin);
-        self.reader = Some(BufReader::new(stdout));
+        self.rx = Some(rx);
         Ok(())
     }
 
@@ -550,31 +651,66 @@ impl NativeSidecar {
             RuntimeError::Execution(format!("Failed to flush native process stdin: {}", e))
         })?;
 
-        let reader = self.reader.as_mut().ok_or_else(|| {
-            RuntimeError::Execution("Child process stdout is not available".to_string())
+        let rx = self.rx.as_ref().ok_or_else(|| {
+            RuntimeError::Execution("Child process receiver is not available".to_string())
         })?;
 
-        let mut line = String::new();
         loop {
-            line.clear();
-            let n = reader.read_line(&mut line).map_err(|e| {
-                RuntimeError::Execution(format!("Failed to read from native process stdout: {}", e))
-            })?;
-            if n == 0 {
-                return Err(RuntimeError::Execution(
-                    "Native process closed stdout unexpectedly".to_string(),
-                ));
-            }
+            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(Ok(line)) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
 
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
+                    if let Ok(val) = serde_json::from_str::<Value>(trimmed)
+                        && val.is_object()
+                    {
+                        let matches_id = val
+                            .get("id")
+                            .and_then(|i| i.as_u64())
+                            .map(|i| i == req_id)
+                            .unwrap_or_else(|| {
+                                val.get("id")
+                                    .and_then(|i| i.as_str())
+                                    .map(|s| s == req_id.to_string())
+                                    .unwrap_or(false)
+                            });
 
-            if let Ok(val) = serde_json::from_str::<Value>(trimmed)
-                && val.is_object()
-            {
-                return Ok(val);
+                        if matches_id {
+                            return Ok(val);
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    self.child = None;
+                    self.stdin = None;
+                    self.rx = None;
+                    return Err(RuntimeError::Execution(format!(
+                        "Failed to read from native process stdout: {}",
+                        e
+                    )));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(mut child) = self.child.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    self.stdin = None;
+                    self.rx = None;
+                    return Err(RuntimeError::Execution(format!(
+                        "Native process '{}' request '{}' timed out after 30 seconds",
+                        self.name, method
+                    )));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.child = None;
+                    self.stdin = None;
+                    self.rx = None;
+                    return Err(RuntimeError::Execution(
+                        "Native process closed stdout unexpectedly".to_string(),
+                    ));
+                }
             }
         }
     }
@@ -722,8 +858,8 @@ impl Drop for NativeSidecar {
 }
 
 pub enum PluginInstance {
-    Wasm(WasmPluginInstance),
-    Native(NativeSidecar),
+    Wasm(Box<WasmPluginInstance>),
+    Native(Box<NativeSidecar>),
 }
 
 impl PluginInstance {
@@ -732,7 +868,9 @@ impl PluginInstance {
         path: P,
         params: HashMap<String, String>,
     ) -> Result<Self, RuntimeError> {
-        WasmPluginInstance::load_from_file(name, path, params).map(PluginInstance::Wasm)
+        WasmPluginInstance::load_from_file(name, path, params)
+            .map(Box::new)
+            .map(PluginInstance::Wasm)
     }
 
     pub fn load_native_from_file<P: AsRef<Path>>(
@@ -740,7 +878,9 @@ impl PluginInstance {
         path: P,
         params: HashMap<String, String>,
     ) -> Result<Self, RuntimeError> {
-        NativeSidecar::new(name, path, params, None).map(PluginInstance::Native)
+        NativeSidecar::new(name, path, params, None)
+            .map(Box::new)
+            .map(PluginInstance::Native)
     }
 
     pub fn get_info(&mut self) -> Result<PluginInfo, RuntimeError> {
