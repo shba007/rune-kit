@@ -1,6 +1,6 @@
 # Cycle 1 — Kit interoperability correction
 
-Date: 2026-10-21. Implementation on develop, prepared version 0.3.1.
+Date: 2026-10-21. Implementation commit: 9c4e41a1d06a5f7ea2af70450308a22ba4d4729c. Release commit/tag: 65377ef53abeac9638057073debb00811a2fb99a / v0.3.1.
 
 ## Root cause and policy
 
@@ -45,12 +45,28 @@ cargo build --workspace --locked
 python scripts/git_gateway_conformance.py --rune target/debug/rune.exe --plugin D:/Projects/Public/rune/code-tools/target/x86_64-pc-windows-msvc/release/rune-git-native.exe --output target/cycle1-git-result.json
 ```
 
-Use the downloaded release rune.exe in `--rune` when validating distribution. Minimum corrected source version is 0.3.1; do not advertise it as an available release until the asset is published and verified.
+Use the downloaded release rune.exe in `--rune` when validating distribution. Minimum compatible released version: 0.3.1. The official Windows asset was downloaded and passed the same real-plugin acceptance sequence.
 
 ## Release status and remaining limits
 
 At verification time, v0.3.0 existed as a remote tag at 3daf070, but no 0.3.0 GitHub Release was published. The earlier Rune Release workflow tagged successfully and failed in Create GitHub Release. Existing tags are preserved; 0.3.1 is the correction version.
 
-Release publication, Windows asset download and downloaded `rune --version` are NOT CERTAIN / pending. No corrected release URL or asset is claimed. Proposed release automation repair (repository token plus explicit deployment dispatch) needs owner approval because automatic approval review rejected the added persistent actions:write permission. Alternative: owner repairs GH_TOKEN for the existing workflow. Release owner: repository owner; implementation agent will continue the develop-to-main process once this is resolved.
+The owner repaired GH_TOKEN, retaining all workflow permissions unchanged. The existing release PR #11 was merged into develop, and main was fast-forwarded to release commit 65377ef. The PAT-based release workflow succeeded and automatically triggered binary deployment.
 
-Native cancellation/timeout still kills only the direct process; descendants are not guaranteed to terminate. Synchronous WASM host callbacks can delay cancellation/timeout. No redesign of those limits was attempted. The real native artifact does not accept standalone MCP initialize (`Unknown method: initialize`); gateway initialize succeeds and plugin `info` supplies version metadata. No Tools change was made for that limitation. Linux CI, full MCP conformance, hybrid host-callback timing and the future published binary are NOT CERTAIN until run.
+- Release: https://github.com/shba007/rune-kit/releases/tag/v0.3.1
+- Release workflow (success): https://github.com/shba007/rune-kit/actions/runs/39647624793
+- Binary deployment: https://github.com/shba007/rune-kit/actions/runs/39647652878
+- Linux source CI (build, test, lint, format passed): https://github.com/shba007/rune-kit/actions/runs/39645189266
+
+Windows job completed successfully. Downloaded the official ZIP, checked its SHA-256 against GitHub's asset digest, confirmed it contains rune.exe, and executed that downloaded binary:
+
+- Asset: https://github.com/shba007/rune-kit/releases/download/v0.3.1/rune-v0.3.1-x86_64-pc-windows-msvc.zip
+- ZIP SHA-256: dc36f6e52ec601f7d7d2b60c9803e546278f4772b8565b3192e2b5155e1b9ed0
+- rune.exe SHA-256: a075c5123b4c982e6a0b7cdb6358edeacb534290943dd5465358c6f5c8154dfa
+- `rune --version`: `rune 0.3.1`.
+- Downloaded-binary integration: 13 normal tools, one read-only tool, all 13 input schemas preserved; validate_commit_message returned valid=true; forced git_commit returned -32600; stderr empty.
+- Same rune-git 0.3.0 artifact/hash recorded above. Local evidence: target/cycle1-release-git-result.json and target/release-verification/v0.3.1/verification.json.
+
+No workflow permission changes were applied. No remaining Windows-release blocker. Intel macOS and both Linux assets are also uploaded; Apple Silicon deployment was still running at the last check, so no completion claim is made for that job.
+
+Native cancellation/timeout still kills only the direct process; descendants are not guaranteed to terminate. Synchronous WASM host callbacks can delay cancellation/timeout. No redesign of those limits was attempted. The real native artifact does not accept standalone MCP initialize (`Unknown method: initialize`); gateway initialize succeeds and plugin `info` supplies version metadata. No Tools change was made for that limitation. Full MCP conformance and hybrid host-callback timing remain NOT CERTAIN. The published Windows binary passed the targeted acceptance check above; this is not full MCP conformance certification.
