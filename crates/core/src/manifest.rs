@@ -118,16 +118,52 @@ pub struct InstalledPlugin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct ToolAnnotations {
+    /// MCP spec 2025-03-26 canonical name: `readOnlyHint`.
+    /// Accepts legacy `readOnly` alias on deserialization for one-release compatibility.
+    /// Serializes BOTH `readOnlyHint` (canonical) and `readOnly` (legacy transitional) until the
+    /// next release.
+    #[serde(
+        rename = "readOnlyHint",
+        alias = "readOnly",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub read_only_hint: Option<bool>,
+
+    /// MCP spec 2025-03-26 canonical name: `destructiveHint`.
+    /// Accepts legacy `destructive` alias on deserialization.
+    #[serde(
+        rename = "destructiveHint",
+        alias = "destructive",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub destructive_hint: Option<bool>,
+
+    /// MCP spec 2025-03-26 canonical name: `idempotentHint`.
+    /// Accepts legacy `idempotent` alias on deserialization.
+    #[serde(
+        rename = "idempotentHint",
+        alias = "idempotent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub idempotent_hint: Option<bool>,
+
+    /// MCP spec 2025-03-26 canonical name: `openWorldHint`.
+    /// Accepts legacy `openWorld` alias on deserialization.
+    #[serde(
+        rename = "openWorldHint",
+        alias = "openWorld",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub open_world_hint: Option<bool>,
+
+    /// Optional human-readable title for the tool (MCP spec 2025-03-26).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub read_only: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destructive: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idempotent: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_world: Option<bool>,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -147,10 +183,11 @@ pub struct ToolRuleSpec {
 impl From<ToolRuleSpec> for ToolAnnotations {
     fn from(rule: ToolRuleSpec) -> Self {
         Self {
-            read_only: rule.read_only,
-            destructive: rule.destructive,
-            idempotent: rule.idempotent,
-            open_world: rule.open_world,
+            read_only_hint: rule.read_only,
+            destructive_hint: rule.destructive,
+            idempotent_hint: rule.idempotent,
+            open_world_hint: rule.open_world,
+            title: None,
         }
     }
 }

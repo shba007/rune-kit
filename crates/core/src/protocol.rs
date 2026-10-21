@@ -144,7 +144,7 @@ impl McpRouter {
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": "2025-03-26",
                     "capabilities": {
                         "tools": { "listChanged": false },
                         "resources": {},
@@ -180,7 +180,7 @@ impl McpRouter {
                                     let is_read_only = tool
                                         .annotations
                                         .as_ref()
-                                        .and_then(|a| a.read_only)
+                                        .and_then(|a| a.read_only_hint)
                                         .unwrap_or(false);
                                     if !is_read_only {
                                         continue;
@@ -193,7 +193,24 @@ impl McpRouter {
                                     "inputSchema": tool.input_schema,
                                 });
                                 if let Some(ref ann) = tool.annotations {
-                                    tool_obj["annotations"] = json!(ann);
+                                    // Emit canonical MCP spec 2025-03-26 names (readOnlyHint, etc.)
+                                    // AND legacy names (readOnly, etc.) for one-release transitional
+                                    // compatibility. Drop legacy names in the next release.
+                                    let mut ann_json =
+                                        serde_json::to_value(ann).unwrap_or_default();
+                                    if let Some(v) = ann.read_only_hint {
+                                        ann_json["readOnly"] = json!(v);
+                                    }
+                                    if let Some(v) = ann.destructive_hint {
+                                        ann_json["destructive"] = json!(v);
+                                    }
+                                    if let Some(v) = ann.idempotent_hint {
+                                        ann_json["idempotent"] = json!(v);
+                                    }
+                                    if let Some(v) = ann.open_world_hint {
+                                        ann_json["openWorld"] = json!(v);
+                                    }
+                                    tool_obj["annotations"] = ann_json;
                                 }
                                 all_tools.push(tool_obj);
                             }
@@ -202,6 +219,16 @@ impl McpRouter {
                             eprintln!("[Rune Error] Failed to list tools from '{}': {}", ns, err);
                         }
                     }
+                }
+                // KF-3: Warn on stderr when read-only mode yields no tools (all tools are
+                // write-capable), so operators can detect a misconfigured --read-only deployment.
+                if self.config.read_only && all_tools.is_empty() {
+                    eprintln!(
+                        "[Rune Warning] --read-only mode is active but no tools are declared \
+                         readOnlyHint=true. The tools list exposed to clients is empty. \
+                         Declare read_only = true in plugin.toml [tools.<name>] to expose tools \
+                         in read-only mode."
+                    );
                 }
                 Some(json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": all_tools } }))
             }
@@ -299,7 +326,7 @@ impl McpRouter {
                                 .iter()
                                 .find(|t| t.name == tool_name)
                                 .and_then(|t| t.annotations.as_ref())
-                                .and_then(|a| a.read_only)
+                                .and_then(|a| a.read_only_hint)
                                 .unwrap_or(false)
                         } else {
                             false

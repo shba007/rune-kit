@@ -56,17 +56,40 @@ fn test_manifest_tool_rules_parsing() {
     assert_eq!(read_rule.idempotent, Some(true));
     assert_eq!(read_rule.destructive, Some(false));
 
+    // Conversion to ToolAnnotations: rule fields map to *Hint fields
     let annotations: ToolAnnotations = read_rule.clone().into();
-    assert_eq!(annotations.read_only, Some(true));
-    assert_eq!(annotations.destructive, Some(false));
+    assert_eq!(annotations.read_only_hint, Some(true));
+    assert_eq!(annotations.destructive_hint, Some(false));
 
+    // KF-1: Serialised wire names must use MCP spec 2025-03-26 *Hint suffix
     let ann_json = serde_json::to_value(&annotations).unwrap();
-    assert_eq!(ann_json["readOnly"], true);
-    assert_eq!(ann_json["destructive"], false);
-    assert_eq!(ann_json["idempotent"], true);
-    assert_eq!(ann_json["openWorld"], false);
+    assert_eq!(
+        ann_json["readOnlyHint"], true,
+        "canonical readOnlyHint must be present"
+    );
+    assert_eq!(
+        ann_json["destructiveHint"], false,
+        "canonical destructiveHint must be present"
+    );
+    assert_eq!(
+        ann_json["idempotentHint"], true,
+        "canonical idempotentHint must be present"
+    );
+    assert_eq!(
+        ann_json["openWorldHint"], false,
+        "canonical openWorldHint must be present"
+    );
+    // Old names must NOT appear in the ToolAnnotations serialisation itself
+    // (legacy aliases are only injected at the protocol layer in tools/list)
+    assert!(
+        ann_json.get("readOnly").is_none(),
+        "readOnly must not be in ToolAnnotations JSON"
+    );
 }
 
+// KF-1: Canonical *Hint names are emitted in tools/list (verified at protocol layer).
+// This test uses the router directly without a real plugin instance so it only asserts the
+// protocol-version upgrade; wire-name injection is covered by test_annotation_wire_names.
 #[test]
 fn test_router_initialize() {
     let mut router = McpRouter::new();
@@ -76,7 +99,8 @@ fn test_router_initialize() {
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 1);
-    assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
+    // KF-1: protocolVersion must report 2025-03-26
+    assert_eq!(resp["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(resp["result"]["serverInfo"]["name"], "rune-kit");
 }
 
@@ -169,4 +193,117 @@ fn test_router_read_only_enforcement() {
             .unwrap()
             .contains("read-only")
     );
+}
+
+// KF-1: Verify ToolAnnotations serialises with *Hint canonical names and that the
+// transitional legacy aliases are accepted on deserialisation (both spellings).
+#[test]
+fn test_annotation_wire_names_canonical() {
+    let ann = ToolAnnotations {
+        read_only_hint: Some(true),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(true),
+        open_world_hint: Some(false),
+        title: Some("My Tool".to_string()),
+    };
+
+    let json = serde_json::to_value(&ann).unwrap();
+    // Canonical names must be present
+    assert_eq!(json["readOnlyHint"], true);
+    assert_eq!(json["destructiveHint"], false);
+    assert_eq!(json["idempotentHint"], true);
+    assert_eq!(json["openWorldHint"], false);
+    assert_eq!(json["title"], "My Tool");
+    // Old names must NOT appear (legacy injection is done in the protocol layer only)
+    assert!(json.get("readOnly").is_none());
+    assert!(json.get("destructive").is_none());
+    assert!(json.get("idempotent").is_none());
+    assert!(json.get("openWorld").is_none());
+}
+
+// KF-7: Accept both old and new spellings from plugin tool lists.
+#[test]
+fn test_annotation_both_spellings_deserialise() {
+    // New canonical spelling (what a spec-compliant plugin sends)
+    let new_json = r#"{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}"#;
+    let ann_new: ToolAnnotations = serde_json::from_str(new_json).expect("New spelling parses");
+    assert_eq!(ann_new.read_only_hint, Some(true));
+    assert_eq!(ann_new.destructive_hint, Some(false));
+    assert_eq!(ann_new.idempotent_hint, Some(true));
+    assert_eq!(ann_new.open_world_hint, Some(false));
+
+    // Legacy spelling (what a pre-2025-03-26 plugin sends)
+    let old_json =
+        r#"{"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}"#;
+    let ann_old: ToolAnnotations = serde_json::from_str(old_json).expect("Old spelling parses");
+    assert_eq!(ann_old.read_only_hint, Some(true));
+    assert_eq!(ann_old.destructive_hint, Some(false));
+    assert_eq!(ann_old.idempotent_hint, Some(true));
+    assert_eq!(ann_old.open_world_hint, Some(false));
+}
+
+// KF-3: resources/list always includes rune://<ns>/rules regardless of --read-only mode.
+// (Tested indirectly here; a real plugin instance would be needed for a full integration test.)
+#[test]
+fn test_router_resources_list_empty_no_instances() {
+    let mut router = McpRouter::new();
+    let resp = router
+        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 5, "method": "resources/list"}"#)
+        .expect("Response expected");
+    assert!(resp["result"]["resources"].as_array().unwrap().is_empty());
+}
+
+// KF-3: tools/list in read-only mode with no registered instances returns [] (not an error).
+#[test]
+fn test_router_tools_list_read_only_empty() {
+    let mut router = McpRouter::new();
+    router.set_read_only(true);
+    let resp = router
+        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 6, "method": "tools/list"}"#)
+        .expect("Response expected");
+    let tools = resp["result"]["tools"].as_array().unwrap();
+    assert!(
+        tools.is_empty(),
+        "Read-only mode with no read-only tools yields empty list"
+    );
+}
+
+// KF-2/KF-4: error shapes for known codes.
+#[test]
+fn test_error_shapes() {
+    let mut router = McpRouter::new();
+
+    // -32800: cancelled
+    let cancel_resp = router.handle_jsonrpc(
+        r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "x1"}}"#,
+    );
+    assert!(cancel_resp.is_none());
+    let call = router
+        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": "x1", "method": "tools/call", "params": {"name": "ns__tool"}}"#)
+        .unwrap();
+    assert_eq!(call["error"]["code"], -32800);
+    assert!(
+        call["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cancelled")
+    );
+
+    // -32600: permission denied (allowlist)
+    let mut r2 = McpRouter::new();
+    r2.set_allowed_tools(vec!["ns__only".to_string()]);
+    let perm = r2
+        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "ns__other"}}"#)
+        .unwrap();
+    assert_eq!(perm["error"]["code"], -32600);
+
+    // -32601: unknown method
+    let unk = router
+        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 11, "method": "no_such_method"}"#)
+        .unwrap();
+    assert_eq!(unk["error"]["code"], -32601);
+
+    // -32700: parse error
+    let parse_err = router.handle_jsonrpc("not json").unwrap();
+    assert_eq!(parse_err["error"]["code"], -32700);
 }

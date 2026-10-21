@@ -429,17 +429,17 @@ impl WasmPluginInstance {
         for tool in &mut tools {
             if let Some(rule) = self.manifest.tools.get(&tool.name) {
                 let mut ann = tool.annotations.take().unwrap_or_default();
-                if ann.read_only.is_none() {
-                    ann.read_only = rule.read_only;
+                if ann.read_only_hint.is_none() {
+                    ann.read_only_hint = rule.read_only;
                 }
-                if ann.destructive.is_none() {
-                    ann.destructive = rule.destructive;
+                if ann.destructive_hint.is_none() {
+                    ann.destructive_hint = rule.destructive;
                 }
-                if ann.idempotent.is_none() {
-                    ann.idempotent = rule.idempotent;
+                if ann.idempotent_hint.is_none() {
+                    ann.idempotent_hint = rule.idempotent;
                 }
-                if ann.open_world.is_none() {
-                    ann.open_world = rule.open_world;
+                if ann.open_world_hint.is_none() {
+                    ann.open_world_hint = rule.open_world;
                 }
                 tool.annotations = Some(ann);
             }
@@ -843,17 +843,17 @@ impl NativeSidecar {
         for tool in &mut tools {
             if let Some(rule) = self.manifest.tools.get(&tool.name) {
                 let mut ann = tool.annotations.take().unwrap_or_default();
-                if ann.read_only.is_none() {
-                    ann.read_only = rule.read_only;
+                if ann.read_only_hint.is_none() {
+                    ann.read_only_hint = rule.read_only;
                 }
-                if ann.destructive.is_none() {
-                    ann.destructive = rule.destructive;
+                if ann.destructive_hint.is_none() {
+                    ann.destructive_hint = rule.destructive;
                 }
-                if ann.idempotent.is_none() {
-                    ann.idempotent = rule.idempotent;
+                if ann.idempotent_hint.is_none() {
+                    ann.idempotent_hint = rule.idempotent;
                 }
-                if ann.open_world.is_none() {
-                    ann.open_world = rule.open_world;
+                if ann.open_world_hint.is_none() {
+                    ann.open_world_hint = rule.open_world;
                 }
                 tool.annotations = Some(ann);
             }
