@@ -20,6 +20,10 @@ pub enum RuntimeError {
     ExtismInit(String),
     #[error("Execution failed: {0}")]
     Execution(String),
+    #[error("Request cancelled by client")]
+    Cancelled,
+    #[error("Tool execution timed out after {0} seconds")]
+    Timeout(u64),
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("IO error: {0}")]
@@ -407,30 +411,77 @@ impl WasmPluginInstance {
         Ok(info)
     }
 
+    pub fn get_cancel_handle(&self) -> extism::CancelHandle {
+        self.plugin.cancel_handle()
+    }
+
+    pub fn cancel(&mut self) {
+        let _ = self.plugin.cancel_handle().cancel();
+    }
+
     pub fn list_tools(&mut self) -> Result<Vec<ToolDefinition>, RuntimeError> {
         let raw = self
             .plugin
             .call::<(), String>("mcp_list_tools", ())
             .map_err(|e| RuntimeError::Execution(e.to_string()))?;
 
-        let tools: Vec<ToolDefinition> = serde_json::from_str(&raw)?;
+        let mut tools: Vec<ToolDefinition> = serde_json::from_str(&raw)?;
+        for tool in &mut tools {
+            if let Some(rule) = self.manifest.tools.get(&tool.name) {
+                let mut ann = tool.annotations.take().unwrap_or_default();
+                if ann.read_only.is_none() {
+                    ann.read_only = rule.read_only;
+                }
+                if ann.destructive.is_none() {
+                    ann.destructive = rule.destructive;
+                }
+                if ann.idempotent.is_none() {
+                    ann.idempotent = rule.idempotent;
+                }
+                if ann.open_world.is_none() {
+                    ann.open_world = rule.open_world;
+                }
+                tool.annotations = Some(ann);
+            }
+        }
         Ok(tools)
     }
 
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
+        self.call_tool_with_cancel(
+            name,
+            arguments,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
+        )
+    }
+
+    pub fn call_tool_with_cancel(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+        _timeout: Option<std::time::Duration>,
+    ) -> Result<Value, RuntimeError> {
         let payload = json!({
             "name": name,
             "arguments": arguments
         })
         .to_string();
 
-        let raw = self
-            .plugin
-            .call::<&str, String>("mcp_call_tool", &payload)
-            .map_err(|e| RuntimeError::Execution(e.to_string()))?;
-
-        let parsed: Value = serde_json::from_str(&raw)?;
-        Ok(parsed)
+        match self.plugin.call::<&str, String>("mcp_call_tool", &payload) {
+            Ok(raw) => {
+                let parsed: Value = serde_json::from_str(&raw)?;
+                Ok(parsed)
+            }
+            Err(e) => {
+                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    Err(RuntimeError::Cancelled)
+                } else {
+                    Err(RuntimeError::Execution(e.to_string()))
+                }
+            }
+        }
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
@@ -622,7 +673,35 @@ impl NativeSidecar {
         Ok(())
     }
 
+    pub fn cancel(&mut self) {
+        self.kill_process();
+    }
+
+    pub fn kill_process(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.stdin = None;
+        self.rx = None;
+    }
+
     pub fn send_request(&mut self, method: &str, params: Value) -> Result<Value, RuntimeError> {
+        self.send_request_with_cancel(
+            method,
+            params,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
+        )
+    }
+
+    pub fn send_request_with_cancel(
+        &mut self,
+        method: &str,
+        params: Value,
+        cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, RuntimeError> {
         if self.child.is_none() {
             self.spawn_process()?;
         }
@@ -655,8 +734,21 @@ impl NativeSidecar {
             RuntimeError::Execution("Child process receiver is not available".to_string())
         })?;
 
+        let timeout_duration = timeout.unwrap_or(std::time::Duration::from_secs(30));
+        let start = std::time::Instant::now();
+
         loop {
-            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                self.kill_process();
+                return Err(RuntimeError::Cancelled);
+            }
+
+            if start.elapsed() >= timeout_duration {
+                self.kill_process();
+                return Err(RuntimeError::Timeout(timeout_duration.as_secs()));
+            }
+
+            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(Ok(line)) => {
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
@@ -683,30 +775,17 @@ impl NativeSidecar {
                     }
                 }
                 Ok(Err(e)) => {
-                    self.child = None;
-                    self.stdin = None;
-                    self.rx = None;
+                    self.kill_process();
                     return Err(RuntimeError::Execution(format!(
                         "Failed to read from native process stdout: {}",
                         e
                     )));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(mut child) = self.child.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                    self.stdin = None;
-                    self.rx = None;
-                    return Err(RuntimeError::Execution(format!(
-                        "Native process '{}' request '{}' timed out after 30 seconds",
-                        self.name, method
-                    )));
+                    continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    self.child = None;
-                    self.stdin = None;
-                    self.rx = None;
+                    self.kill_process();
                     return Err(RuntimeError::Execution(
                         "Native process closed stdout unexpectedly".to_string(),
                     ));
@@ -760,17 +839,52 @@ impl NativeSidecar {
 
         let res = resp.get("result").unwrap_or(&resp);
         let tools_val = res.get("tools").unwrap_or(res);
-        let tools: Vec<ToolDefinition> = serde_json::from_value(tools_val.clone())?;
+        let mut tools: Vec<ToolDefinition> = serde_json::from_value(tools_val.clone())?;
+        for tool in &mut tools {
+            if let Some(rule) = self.manifest.tools.get(&tool.name) {
+                let mut ann = tool.annotations.take().unwrap_or_default();
+                if ann.read_only.is_none() {
+                    ann.read_only = rule.read_only;
+                }
+                if ann.destructive.is_none() {
+                    ann.destructive = rule.destructive;
+                }
+                if ann.idempotent.is_none() {
+                    ann.idempotent = rule.idempotent;
+                }
+                if ann.open_world.is_none() {
+                    ann.open_world = rule.open_world;
+                }
+                tool.annotations = Some(ann);
+            }
+        }
         Ok(tools)
     }
 
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
-        let resp = self.send_request(
+        self.call_tool_with_cancel(
+            name,
+            arguments,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
+        )
+    }
+
+    pub fn call_tool_with_cancel(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, RuntimeError> {
+        let resp = self.send_request_with_cancel(
             "tools/call",
             json!({
                 "name": name,
                 "arguments": arguments
             }),
+            cancel_flag,
+            timeout,
         )?;
 
         if let Some(err) = resp.get("error") {
@@ -897,10 +1011,41 @@ impl PluginInstance {
         }
     }
 
+    pub fn cancel(&mut self) {
+        match self {
+            PluginInstance::Wasm(w) => w.cancel(),
+            PluginInstance::Native(n) => n.cancel(),
+        }
+    }
+
+    pub fn manifest(&self) -> &PluginManifest {
+        match self {
+            PluginInstance::Wasm(w) => &w.manifest,
+            PluginInstance::Native(n) => &n.manifest,
+        }
+    }
+
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, RuntimeError> {
         match self {
             PluginInstance::Wasm(w) => w.call_tool(name, arguments),
             PluginInstance::Native(n) => n.call_tool(name, arguments),
+        }
+    }
+
+    pub fn call_tool_with_cancel(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, RuntimeError> {
+        match self {
+            PluginInstance::Wasm(w) => {
+                w.call_tool_with_cancel(name, arguments, cancel_flag, timeout)
+            }
+            PluginInstance::Native(n) => {
+                n.call_tool_with_cancel(name, arguments, cancel_flag, timeout)
+            }
         }
     }
 

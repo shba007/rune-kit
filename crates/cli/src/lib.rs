@@ -1,8 +1,13 @@
 use clap::{Parser, Subcommand};
+use serde_json::json;
 
 #[derive(Parser)]
 #[command(name = "rune", version, about = "Rune MCP Engine & Package Manager")]
 pub struct Cli {
+    /// Output response as machine-readable JSON
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -19,6 +24,15 @@ pub enum Commands {
         /// Injected key-value parameter (e.g. -p allowed_dir=/workspace)
         #[arg(short, long, value_parser = parse_key_val)]
         param: Vec<(String, String)>,
+        /// Run in read-only mode, exposing only tools declared read-only
+        #[arg(long)]
+        read_only: bool,
+        /// Allowlist specific tools (e.g. --allow-tool filesystem__read_file)
+        #[arg(long = "allow-tool", value_delimiter = ',')]
+        allow_tool: Vec<String>,
+        /// Per-tool execution timeout in seconds
+        #[arg(long)]
+        timeout: Option<u64>,
     },
     /// Install an artifact from registry, URL, or local path
     Install {
@@ -93,8 +107,23 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sm = SkillManager::new();
 
     match cli.command {
-        Commands::Run { plugin, all, param } => {
+        Commands::Run {
+            plugin,
+            all,
+            param,
+            read_only,
+            allow_tool,
+            timeout,
+        } => {
             let mut router = McpRouter::new();
+            router.set_read_only(read_only);
+            if !allow_tool.is_empty() {
+                router.set_allowed_tools(allow_tool);
+            }
+            if let Some(t) = timeout {
+                router.set_tool_timeout(t);
+            }
+
             let mut params_map = resolve_host_env_params();
             params_map.extend(param);
 
@@ -104,22 +133,36 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("No plugins installed to run in gateway mode. Install one first.");
                     std::process::exit(1);
                 }
+                let mut loaded_count = 0;
                 for (name, plugin_entry) in lockfile.plugins {
                     if let Some(path) = pm.get_plugin_path(&name) {
-                        let instance = match plugin_entry.execution_kind {
-                            ExecutionKind::Wasm => PluginInstance::load_wasm_from_file(
-                                &name,
-                                path,
-                                params_map.clone(),
-                            )?,
+                        let instance_res = match plugin_entry.execution_kind {
+                            ExecutionKind::Wasm => {
+                                PluginInstance::load_wasm_from_file(&name, path, params_map.clone())
+                            }
                             ExecutionKind::Native => PluginInstance::load_native_from_file(
                                 &name,
                                 path,
                                 params_map.clone(),
-                            )?,
+                            ),
                         };
-                        router.register(name, instance);
+                        match instance_res {
+                            Ok(instance) => {
+                                router.register(name, instance);
+                                loaded_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[Rune Warning] Failed to load plugin '{}': {}. Other plugins will still serve.",
+                                    name, e
+                                );
+                            }
+                        }
                     }
+                }
+                if loaded_count == 0 {
+                    eprintln!("Error: No installed plugins could be loaded successfully.");
+                    std::process::exit(1);
                 }
             } else if let Some(target) = plugin {
                 let lockfile = pm.load_lockfile();
@@ -152,7 +195,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
 
-            router.run_stdio()?;
+            router.run_stdio().await?;
         }
         Commands::Install {
             target,
@@ -176,13 +219,28 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if is_skill {
                 let installed = sm.install_skill(&target, version).await?;
-                println!(
-                    "Installed skill '{}' (v{}, {}) — {}",
-                    installed.name,
-                    installed.version,
-                    installed.source,
-                    installed.description.unwrap_or_else(|| "-".to_string()),
-                );
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "success",
+                            "type": "skill",
+                            "name": installed.name,
+                            "version": installed.version,
+                            "author": installed.author,
+                            "description": installed.description,
+                            "source": installed.source
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "Installed skill '{}' (v{}, {}) — {}",
+                        installed.name,
+                        installed.version,
+                        installed.source,
+                        installed.description.unwrap_or_else(|| "-".to_string()),
+                    );
+                }
             } else {
                 let installed = pm.install(&target, version, native).await?;
                 let kind_label = match (&installed.native_binary_path, &installed.execution_kind) {
@@ -192,38 +250,136 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (None, ExecutionKind::Wasm) => "wasm",
                 };
 
-                println!(
-                    "Installed '{}' (v{}, {})",
-                    installed.name, installed.version, kind_label
-                );
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "success",
+                            "type": "plugin",
+                            "name": installed.name,
+                            "version": installed.version,
+                            "execution_kind": kind_label,
+                            "description": installed.description,
+                            "source": installed.source
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "Installed '{}' (v{}, {})",
+                        installed.name, installed.version, kind_label
+                    );
 
-                if let Some(ref desc) = installed.description
-                    && !desc.is_empty()
-                {
-                    println!("  Description: {}", desc);
-                }
-                if installed.source != "registry" {
-                    println!("  Source: {}", installed.source);
+                    if let Some(ref desc) = installed.description
+                        && !desc.is_empty()
+                    {
+                        println!("  Description: {}", desc);
+                    }
+                    if installed.source != "registry" {
+                        println!("  Source: {}", installed.source);
+                    }
                 }
             }
         }
         Commands::Uninstall { name } => {
             if sm.uninstall_skill(&name)? {
-                println!("Uninstalled skill '{}'", name);
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "success",
+                            "type": "skill",
+                            "name": name,
+                            "action": "uninstalled"
+                        }))?
+                    );
+                } else {
+                    println!("Uninstalled skill '{}'", name);
+                }
             } else if pm.uninstall(&name)? {
-                println!("Uninstalled '{}' (plugin)", name);
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "success",
+                            "type": "plugin",
+                            "name": name,
+                            "action": "uninstalled"
+                        }))?
+                    );
+                } else {
+                    println!("Uninstalled '{}' (plugin)", name);
+                }
             } else {
-                eprintln!("Artifact '{}' is not installed", name);
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "status": "error",
+                            "message": format!("Artifact '{}' is not installed", name)
+                        }))?
+                    );
+                    std::process::exit(1);
+                } else {
+                    eprintln!("Artifact '{}' is not installed", name);
+                }
             }
         }
         Commands::List => {
             let lockfile = pm.load_lockfile();
+            let skill_lockfile = sm.load_skills_lockfile();
+
+            if cli.json {
+                let plugins_json: Vec<_> = lockfile
+                    .plugins
+                    .values()
+                    .map(|p| {
+                        let kind_label = match (&p.native_binary_path, &p.execution_kind) {
+                            (Some(_), ExecutionKind::Native) => "native",
+                            (Some(_), ExecutionKind::Wasm) => "wasm+native",
+                            (None, ExecutionKind::Native) => "native",
+                            (None, ExecutionKind::Wasm) => "wasm",
+                        };
+                        json!({
+                            "name": p.name,
+                            "version": p.version,
+                            "description": p.description,
+                            "execution_kind": kind_label,
+                            "binary_path": p.binary_path,
+                            "native_binary_path": p.native_binary_path,
+                            "source": p.source,
+                        })
+                    })
+                    .collect();
+
+                let skills_json: Vec<_> = skill_lockfile
+                    .skills
+                    .values()
+                    .map(|s| {
+                        json!({
+                            "name": s.name,
+                            "version": s.version,
+                            "author": s.author,
+                            "description": s.description,
+                            "source": s.source,
+                        })
+                    })
+                    .collect();
+
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "plugins": plugins_json,
+                        "skills": skills_json,
+                    }))?
+                );
+                return Ok(());
+            }
+
             if !lockfile.plugins.is_empty() {
                 println!("\nInstalled Plugins ({}):", lockfile.plugins.len());
                 render_list_table(&lockfile).render();
             }
 
-            let skill_lockfile = sm.load_skills_lockfile();
             if !skill_lockfile.skills.is_empty() {
                 println!("\nInstalled Skills ({}):", skill_lockfile.skills.len());
                 let mut t = Table::new(84)
@@ -251,6 +407,52 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Available => {
             let plugin_available = pm.fetch_registry().await?;
             let lockfile = pm.load_lockfile();
+            let skill_available = sm.fetch_skills().await?;
+            let skill_lockfile = sm.load_skills_lockfile();
+
+            if cli.json {
+                let plugins_json: Vec<_> = plugin_available
+                    .iter()
+                    .map(|p| {
+                        let current = lockfile.plugins.get(&p.name).map(|e| e.version.as_str());
+                        json!({
+                            "name": p.name,
+                            "installed_version": current,
+                            "latest_version": p.latest,
+                            "has_wasm": p.has_wasm,
+                            "has_native": p.has_native,
+                            "description": p.description,
+                        })
+                    })
+                    .collect();
+
+                let skills_json: Vec<_> = skill_available
+                    .iter()
+                    .map(|s| {
+                        let current = skill_lockfile
+                            .skills
+                            .get(&s.name)
+                            .map(|e| e.version.as_str());
+                        json!({
+                            "name": s.name,
+                            "installed_version": current,
+                            "latest_version": s.latest,
+                            "author": s.author,
+                            "description": s.description,
+                        })
+                    })
+                    .collect();
+
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "plugins": plugins_json,
+                        "skills": skills_json,
+                    }))?
+                );
+                return Ok(());
+            }
+
             if !plugin_available.is_empty() {
                 println!(
                     "\nAvailable Plugins ({} in registry):",
@@ -285,8 +487,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            let skill_available = sm.fetch_skills().await?;
-            let skill_lockfile = sm.load_skills_lockfile();
             if !skill_available.is_empty() {
                 println!(
                     "\nAvailable Skills ({} in registry):",
@@ -362,13 +562,45 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            let lockfile = pm.load_lockfile();
+            let skill_lockfile = sm.load_skills_lockfile();
+
+            if cli.json {
+                let results_json: Vec<_> = matches
+                    .iter()
+                    .map(|item| {
+                        let current = if item.ty == "skill" {
+                            skill_lockfile
+                                .skills
+                                .get(&item.name)
+                                .map(|s| s.version.as_str())
+                        } else {
+                            lockfile.plugins.get(&item.name).map(|p| p.version.as_str())
+                        };
+                        json!({
+                            "type": item.ty,
+                            "name": item.name,
+                            "installed_version": current,
+                            "latest_version": item.latest,
+                            "description": item.description,
+                        })
+                    })
+                    .collect();
+
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "keyword": keyword,
+                        "results": results_json,
+                    }))?
+                );
+                return Ok(());
+            }
+
             if matches.is_empty() {
                 println!("No artifacts found matching '{}'", keyword);
                 return Ok(());
             }
-
-            let lockfile = pm.load_lockfile();
-            let skill_lockfile = sm.load_skills_lockfile();
 
             let mut t = Table::new(88)
                 .column(Column::fixed("TYPE", 8))
@@ -434,22 +666,69 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }))
                 .collect::<Vec<_>>();
 
-            if all_statuses.is_empty() {
-                println!("No matching installed artifacts found to inspect or update.");
+            if check {
+                if cli.json {
+                    let updates_json: Vec<_> = all_statuses
+                        .iter()
+                        .map(|s| {
+                            json!({
+                                "name": s.name,
+                                "installed_version": s.installed_version,
+                                "latest_version": s.latest_version,
+                                "has_update": s.has_update,
+                                "has_wasm": s.has_wasm,
+                                "has_native": s.has_native,
+                            })
+                        })
+                        .collect();
+
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "updates": updates_json,
+                        }))?
+                    );
+                    return Ok(());
+                }
+
+                if all_statuses.is_empty() {
+                    println!("No matching installed artifacts found to inspect or update.");
+                    return Ok(());
+                }
+                render_update_status_table(&all_statuses).render();
                 return Ok(());
             }
 
-            if check {
-                render_update_status_table(&all_statuses).render();
+            if all_statuses.is_empty() {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "updated": []
+                        }))?
+                    );
+                    return Ok(());
+                }
+                println!("No matching installed artifacts found to inspect or update.");
                 return Ok(());
             }
 
             let to_update: Vec<_> = all_statuses.into_iter().filter(|s| s.has_update).collect();
             if to_update.is_empty() {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "updated": []
+                        }))?
+                    );
+                    return Ok(());
+                }
                 println!("All specified artifacts are already up to date.");
                 return Ok(());
             }
 
+            let mut updated_items = Vec::new();
             for item in to_update {
                 let is_skill = sm
                     .load_skills_lockfile()
@@ -458,22 +737,33 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .any(|(n, _)| n.eq_ignore_ascii_case(&item.name));
 
                 let ty = if is_skill { "skill" } else { "plugin" };
-                println!(
-                    "Updating {} '{}' (v{} -> v{})...",
-                    ty, item.name, item.installed_version, item.latest_version
-                );
+                if !cli.json {
+                    println!(
+                        "Updating {} '{}' (v{} -> v{})...",
+                        ty, item.name, item.installed_version, item.latest_version
+                    );
+                }
 
                 if is_skill {
                     let installed = sm
-                        .install_skill(&item.name, Some(item.latest_version))
+                        .install_skill(&item.name, Some(item.latest_version.clone()))
                         .await?;
-                    println!(
-                        "Successfully updated skill '{}' to v{}",
-                        installed.name, installed.version
-                    );
+                    if !cli.json {
+                        println!(
+                            "Successfully updated skill '{}' to v{}",
+                            installed.name, installed.version
+                        );
+                    }
+                    updated_items.push(json!({
+                        "type": "skill",
+                        "name": installed.name,
+                        "old_version": item.installed_version,
+                        "new_version": installed.version,
+                        "status": "updated"
+                    }));
                 } else {
                     let installed = pm
-                        .install(&item.name, Some(item.latest_version), false)
+                        .install(&item.name, Some(item.latest_version.clone()), false)
                         .await?;
                     let kind_label =
                         match (&installed.native_binary_path, &installed.execution_kind) {
@@ -482,11 +772,30 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             (None, ExecutionKind::Native) => "native",
                             (None, ExecutionKind::Wasm) => "wasm",
                         };
-                    println!(
-                        "Successfully updated plugin '{}' to v{} ({})",
-                        installed.name, installed.version, kind_label
-                    );
+                    if !cli.json {
+                        println!(
+                            "Successfully updated plugin '{}' to v{} ({})",
+                            installed.name, installed.version, kind_label
+                        );
+                    }
+                    updated_items.push(json!({
+                        "type": "plugin",
+                        "name": installed.name,
+                        "old_version": item.installed_version,
+                        "new_version": installed.version,
+                        "execution_kind": kind_label,
+                        "status": "updated"
+                    }));
                 }
+            }
+
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "updated": updated_items,
+                    }))?
+                );
             }
         }
         Commands::SelfUpdate {
@@ -498,6 +807,18 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if check {
                 let (tag, _) = pm.fetch_latest_cli_release(version.as_deref()).await?;
                 let latest_clean = tag.strip_prefix('v').unwrap_or(&tag);
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "current_version": format!("v{}", current_ver),
+                            "target_release": tag,
+                            "has_update": is_newer_version(latest_clean, current_ver),
+                        }))?
+                    );
+                    return Ok(());
+                }
+
                 println!("Current version: v{}", current_ver);
                 println!("Release target:  {}", tag);
                 if is_newer_version(latest_clean, current_ver) {
@@ -510,16 +831,48 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            println!("Checking for CLI release...");
+            if !cli.json {
+                println!("Checking for CLI release...");
+            }
             match pm.self_update(version.as_deref(), force).await {
                 Ok(new_tag) => {
-                    println!("Successfully updated rune CLI to {}!", new_tag);
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "status": "success",
+                                "updated_version": new_tag,
+                            }))?
+                        );
+                    } else {
+                        println!("Successfully updated rune CLI to {}!", new_tag);
+                    }
                 }
                 Err(rune_kit_core::PackageError::SelfUpdate(msg)) => {
-                    eprintln!("{}", msg);
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "status": "error",
+                                "message": msg,
+                            }))?
+                        );
+                    } else {
+                        eprintln!("{}", msg);
+                    }
                 }
                 Err(err) => {
-                    eprintln!("Failed to perform self-update: {}", err);
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "status": "error",
+                                "message": err.to_string(),
+                            }))?
+                        );
+                    } else {
+                        eprintln!("Failed to perform self-update: {}", err);
+                    }
                 }
             }
         }

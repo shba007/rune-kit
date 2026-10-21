@@ -30,6 +30,8 @@ pub struct PluginManifest {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub dependencies: Dependencies,
+    #[serde(default)]
+    pub tools: HashMap<String, ToolRuleSpec>,
 }
 
 impl PluginManifest {
@@ -115,12 +117,52 @@ pub struct InstalledPlugin {
     pub manifest: Option<PluginManifest>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ToolRuleSpec {
+    #[serde(default)]
+    pub read_only: Option<bool>,
+    #[serde(default)]
+    pub destructive: Option<bool>,
+    #[serde(default)]
+    pub idempotent: Option<bool>,
+    #[serde(default)]
+    pub open_world: Option<bool>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl From<ToolRuleSpec> for ToolAnnotations {
+    fn from(rule: ToolRuleSpec) -> Self {
+        Self {
+            read_only: rule.read_only,
+            destructive: rule.destructive,
+            idempotent: rule.idempotent,
+            open_world: rule.open_world,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     #[serde(rename = "inputSchema", alias = "input_schema")]
     pub input_schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<ToolAnnotations>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
