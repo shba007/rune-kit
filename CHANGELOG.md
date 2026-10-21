@@ -62,6 +62,20 @@
 - apply code fixes [skip ci] - (340be1c) - shba007
 
 - - -
+## [v0.3.0](https://github.com/shba007/rune-kit/compare/98aace83841ae8306e3577d11396a8ff6f8bcf26..v0.3.0) - 2026-10-21
+#### 🚀 Features
+- (**protocol**) upgrade MCP annotations to spec 2025-03-26 Hint suffix names (KF-1, KF-3, KF-7) - ([a907af7](https://github.com/shba007/rune-kit/commit/a907af76db749758a60fd886d11e44c3636bf677)) - Shirsendu Bairagi
+- Add native MCP fixture and enhance protocol tests - ([8c9a46f](https://github.com/shba007/rune-kit/commit/8c9a46fd64fd5659a1aac38f17aace7875b60529)) - Shirsendu Bairagi
+- Enhance runtime error handling and tool cancellation support - ([ce8860a](https://github.com/shba007/rune-kit/commit/ce8860af33c40c97b9f9eed98fd0ab9ea3fc3949)) - Shirsendu Bairagi
+- integrate resolve_host_env_params into runtime and core packages - ([98aace8](https://github.com/shba007/rune-kit/commit/98aace83841ae8306e3577d11396a8ff6f8bcf26)) - Shirsendu Bairagi
+#### 📚 Documentation
+- (**handoff**) add Studio follow-up report covering KF-1 through KF-7 - ([53d49d0](https://github.com/shba007/rune-kit/commit/53d49d003562c69a185c086acdb9d833dbd2f752)) - Shirsendu Bairagi
+- update README to clarify MCP plugin and skill runtime host description - ([fc44b81](https://github.com/shba007/rune-kit/commit/fc44b81206df0e48895988763c40a7ae9ed8c187)) - Shirsendu Bairagi
+#### 🚜 Refactoring
+- simplify metadata check for executable permissions in package and provision modules - ([17303d3](https://github.com/shba007/rune-kit/commit/17303d37c8a6c2cb218c7793b29ff9a23439e7d0)) - Shirsendu Bairagi
+
+- - -
+
 
 ## 0.1.0 - 2026-09-29
 #### Features
