@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 - 2026-10-21
+- Accept equal canonical and legacy annotation keys together from Rune Tools in native and WASM discovery. Reject conflicting or non-boolean facts with a diagnostic.
+- Report discovery failures as JSON-RPC -32000 instead of successful empty/partial lists. Preserve inputSchema and x-rune-rules.
+- Retain canonical and legacy output throughout 0.3.x; any output removal requires a minor release and explicit migration note. Legacy input remains supported.
+
+
 ## 0.1.0 - 2026-09-30
 #### Features
 - (**cli**) support host env vars for plugin config and bump to 0.1.1 - (61c818d) - Shirsendu Bairagi

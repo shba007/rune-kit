@@ -186,6 +186,7 @@ impl McpRouter {
             })),
             "tools/list" => {
                 let mut all_tools = Vec::new();
+                let mut discovery_errors = Vec::new();
                 for (ns, instance) in self.instances.iter_mut() {
                     match instance.list_tools() {
                         Ok(tools) => {
@@ -220,8 +221,8 @@ impl McpRouter {
                                 });
                                 if let Some(ref ann) = tool.annotations {
                                     // Emit canonical MCP spec 2025-03-26 names (readOnlyHint, etc.)
-                                    // AND legacy names (readOnly, etc.) for one-release transitional
-                                    // compatibility. Drop legacy names in the next release.
+                                    // AND legacy names (readOnly, etc.) throughout 0.3.x.
+                                    // Removal requires a minor release and a migration note.
                                     let mut ann_json =
                                         serde_json::to_value(ann).unwrap_or_default();
                                     if let Some(v) = ann.read_only_hint {
@@ -242,9 +243,17 @@ impl McpRouter {
                             }
                         }
                         Err(err) => {
-                            eprintln!("[Rune Error] Failed to list tools from '{}': {}", ns, err);
+                            let diagnostic = format!("plugin '{ns}': {err}");
+                            eprintln!("[Rune Error] Failed to list tools from {diagnostic}");
+                            discovery_errors.push(diagnostic);
                         }
                     }
+                }
+                // Never turn failed discovery into a successful empty or partial list.
+                if !discovery_errors.is_empty() {
+                    discovery_errors.sort();
+                    return Some(json!({"jsonrpc":"2.0", "id":id,
+                        "error":{"code":-32000,"message":format!("Tool discovery failed: {}", discovery_errors.join("; "))}}));
                 }
                 // KF-3: Warn on stderr when read-only mode yields no tools (all tools are
                 // write-capable), so operators can detect a misconfigured --read-only deployment.

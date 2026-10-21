@@ -117,52 +117,97 @@ pub struct InstalledPlugin {
     pub manifest: Option<PluginManifest>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Canonical MCP tool facts. Both wire spellings are accepted, including equal pairs.
+/// tools/list retains legacy output throughout 0.3.x; removal requires a minor-version
+/// release and an explicit migration note. Legacy input remains supported.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 pub struct ToolAnnotations {
-    /// MCP spec 2025-03-26 canonical name: `readOnlyHint`.
-    /// Accepts legacy `readOnly` alias on deserialization for one-release compatibility.
-    /// Serializes the canonical name; tools/list adds the legacy name for 0.2.3 only.
-    #[serde(
-        rename = "readOnlyHint",
-        alias = "readOnly",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "readOnlyHint", skip_serializing_if = "Option::is_none")]
     pub read_only_hint: Option<bool>,
-
-    /// MCP spec 2025-03-26 canonical name: `destructiveHint`.
-    /// Accepts legacy `destructive` alias on deserialization.
-    #[serde(
-        rename = "destructiveHint",
-        alias = "destructive",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "destructiveHint", skip_serializing_if = "Option::is_none")]
     pub destructive_hint: Option<bool>,
-
-    /// MCP spec 2025-03-26 canonical name: `idempotentHint`.
-    /// Accepts legacy `idempotent` alias on deserialization.
-    #[serde(
-        rename = "idempotentHint",
-        alias = "idempotent",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "idempotentHint", skip_serializing_if = "Option::is_none")]
     pub idempotent_hint: Option<bool>,
-
-    /// MCP spec 2025-03-26 canonical name: `openWorldHint`.
-    /// Accepts legacy `openWorld` alias on deserialization.
-    #[serde(
-        rename = "openWorldHint",
-        alias = "openWorld",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "openWorldHint", skip_serializing_if = "Option::is_none")]
     pub open_world_hint: Option<bool>,
-
-    /// Optional human-readable title for the tool (MCP spec 2025-03-26).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+// A present fact must be a boolean. Null is not a valid declaration and must not
+// fall through to a permissive value in the other spelling or manifest defaults.
+fn annotation_bool<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<bool>, D::Error> {
+    bool::deserialize(deserializer).map(Some)
+}
+
+impl<'de> Deserialize<'de> for ToolAnnotations {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Input {
+            #[serde(default, deserialize_with = "annotation_bool")]
+            read_only_hint: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            read_only: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            destructive_hint: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            destructive: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            idempotent_hint: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            idempotent: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            open_world_hint: Option<bool>,
+            #[serde(default, deserialize_with = "annotation_bool")]
+            open_world: Option<bool>,
+            #[serde(default)]
+            title: Option<String>,
+        }
+        fn merge<E: serde::de::Error>(
+            canonical: Option<bool>,
+            legacy: Option<bool>,
+            canonical_name: &str,
+            legacy_name: &str,
+        ) -> Result<Option<bool>, E> {
+            match (canonical, legacy) {
+                (Some(a), Some(b)) if a != b => Err(E::custom(format!(
+                    "conflicting annotation values for {canonical_name} and {legacy_name}"
+                ))),
+                _ => Ok(canonical.or(legacy)),
+            }
+        }
+        let input = Input::deserialize(deserializer)?;
+        Ok(Self {
+            read_only_hint: merge(
+                input.read_only_hint,
+                input.read_only,
+                "readOnlyHint",
+                "readOnly",
+            )?,
+            destructive_hint: merge(
+                input.destructive_hint,
+                input.destructive,
+                "destructiveHint",
+                "destructive",
+            )?,
+            idempotent_hint: merge(
+                input.idempotent_hint,
+                input.idempotent,
+                "idempotentHint",
+                "idempotent",
+            )?,
+            open_world_hint: merge(
+                input.open_world_hint,
+                input.open_world,
+                "openWorldHint",
+                "openWorld",
+            )?,
+            title: input.title,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

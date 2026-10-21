@@ -8,12 +8,23 @@ tests are not full MCP conformance certification.
 
 Annotation keys are `readOnlyHint`, `destructiveHint`, `idempotentHint` and
 `openWorldHint`, with optional `title`. Current compatibility output also retains
-legacy spellings. Plugin annotations override manifest defaults. `inputSchema`
+legacy spellings throughout 0.3.x. Output removal requires a minor-version release
+and an explicit migration note; legacy input stays supported. Both spellings may
+appear in one object if their boolean values agree. Conflicting pairs reject the
+plugin's discovery response, naming both keys. Non-boolean declarations (including
+null) are rejected; absent optional facts remain unknown, never implicitly read-only.
+The centralized ToolAnnotations decoder is shared by native and WASM discovery.
+Plugin annotations override manifest defaults. `inputSchema`
 is opaque JSON, including `x-rune-rules`; a separate top-level `rules` field is
 not forwarded. Manifest rules are available through `rune://<namespace>/rules`.
 
 Read-only mode exposes only explicitly declared read-only tools; a forced write
-is refused. An empty tools list can also mean an allowlist or discovery failure.
+is refused. An empty successful tools list means no discovered tools survived the
+filters (or plugins genuinely declared none). Any plugin discovery failure returns
+JSON-RPC -32000 with `Tool discovery failed: plugin '<namespace>': <reason>` instead
+of a successful empty or partial list; stderr also records the failure. This applies
+even when other plugins discovered tools successfully. Read-only forced calls keep
+the existing fail-closed -32600 behaviour if their facts cannot be discovered.
 Native fixture tests cover read-only listing, rules-resource access and refusal.
 Real hybrid/WASM companion behavior requires separate acceptance checks.
 
