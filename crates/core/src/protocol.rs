@@ -120,6 +120,32 @@ impl McpRouter {
             }
         };
 
+        // MCP 2025-03-26 permits JSON-RPC batches on stdio.
+        if let Some(batch) = req.as_array() {
+            if batch.is_empty() {
+                return Some(json!({"jsonrpc":"2.0", "id":null,
+                    "error":{"code":-32600,"message":"Invalid empty batch"}}));
+            }
+            let mut responses = Vec::new();
+            for item in batch {
+                if !item.is_object()
+                    || item.get("method").and_then(Value::as_str) == Some("initialize")
+                {
+                    responses.push(json!({"jsonrpc":"2.0", "id":item.get("id"),
+                        "error":{"code":-32600,"message":"Invalid batch request"}}));
+                } else if let Some(response) = self.handle_jsonrpc(&item.to_string())
+                    && item.get("id").is_some()
+                {
+                    responses.push(response);
+                }
+            }
+            return if responses.is_empty() {
+                None
+            } else {
+                Some(json!(responses))
+            };
+        }
+
         let id = req.get("id");
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
@@ -150,7 +176,7 @@ impl McpRouter {
                         "resources": {},
                         "prompts": {}
                     },
-                    "serverInfo": { "name": "rune-kit", "version": "0.1.0" }
+                    "serverInfo": { "name": "rune-kit", "version": env!("CARGO_PKG_VERSION") }
                 }
             })),
             "ping" => Some(json!({

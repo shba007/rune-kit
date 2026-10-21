@@ -121,8 +121,7 @@ pub struct InstalledPlugin {
 pub struct ToolAnnotations {
     /// MCP spec 2025-03-26 canonical name: `readOnlyHint`.
     /// Accepts legacy `readOnly` alias on deserialization for one-release compatibility.
-    /// Serializes BOTH `readOnlyHint` (canonical) and `readOnly` (legacy transitional) until the
-    /// next release.
+    /// Serializes the canonical name; tools/list adds the legacy name for 0.2.3 only.
     #[serde(
         rename = "readOnlyHint",
         alias = "readOnly",

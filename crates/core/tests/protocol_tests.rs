@@ -307,3 +307,165 @@ fn test_error_shapes() {
     let parse_err = router.handle_jsonrpc("not json").unwrap();
     assert_eq!(parse_err["error"]["code"], -32700);
 }
+
+// Exercise the actual tools/list wire path with a portable native MCP fixture.
+#[test]
+fn native_wire_rules_and_timeout() {
+    use rune_kit_core::runtime::{NativeSidecar, PluginInstance};
+    use std::collections::HashMap;
+    let dir = std::env::temp_dir().join(format!(
+        "rune-kf-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join(format!("fixture{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        std::process::Command::new("rustc")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/mcp_native.rs"
+            ))
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let manifest = PluginManifest::from_toml(
+        r#"
+        name = "fixture"
+        version = "0.1.0"
+        [tools.read]
+        read_only = true
+        destructive = false
+        idempotent = true
+        open_world = false
+    "#,
+    )
+    .unwrap();
+    let native = NativeSidecar::new("fixture", &binary, HashMap::new(), Some(manifest)).unwrap();
+    let mut router = McpRouter::new();
+    router.register("fixture".into(), PluginInstance::Native(Box::new(native)));
+    router.set_read_only(true);
+    let listed = router
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+        .unwrap();
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "fixture__read");
+    let ann = &tools[0]["annotations"];
+    for (canonical, legacy, expected) in [
+        ("readOnlyHint", "readOnly", true),
+        ("destructiveHint", "destructive", false),
+        ("idempotentHint", "idempotent", true),
+        ("openWorldHint", "openWorld", false),
+    ] {
+        assert_eq!(ann[canonical], expected);
+        assert_eq!(ann[legacy], expected);
+    }
+    let resources = router
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#)
+        .unwrap();
+    assert!(
+        resources["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["uri"] == "rune://fixture/rules")
+    );
+    let rules = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"rune://fixture/rules"}}"#).unwrap();
+    let text = rules["result"]["contents"][0]["text"].as_str().unwrap();
+    let rules: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(rules["manifest"]["tools"]["read"]["read_only"], true);
+    let refused = router
+        .handle_jsonrpc(
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"fixture__write"}}"#,
+        )
+        .unwrap();
+    assert_eq!(refused["error"]["code"], -32600);
+    router.set_tool_timeout(1);
+    let timed_out = router
+        .handle_jsonrpc(
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"fixture__read"}}"#,
+        )
+        .unwrap();
+    assert_eq!(
+        timed_out["error"],
+        serde_json::json!({"code":-32000,"message":"Tool execution timed out after 1 seconds"})
+    );
+    // A killed native child must respawn successfully for discovery.
+    assert_eq!(
+        router
+            .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":6,"method":"tools/list"}"#)
+            .unwrap()["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    drop(router);
+    std::fs::remove_file(&binary).unwrap();
+    let symbols = binary.with_extension("pdb");
+    if symbols.exists() {
+        std::fs::remove_file(symbols).unwrap();
+    }
+    std::fs::remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn wasm_explicit_timeout_interrupts_guest() {
+    use rune_kit_core::runtime::{RuntimeError, WasmPluginInstance};
+    let bytes = wat::parse_str(
+        r#"(module
+        (func (export "mcp_call_tool") (result i32)
+            (loop $spin (br $spin)) i32.const 0))"#,
+    )
+    .unwrap();
+    let mut wasm = WasmPluginInstance::load_from_bytes(
+        "timeout-fixture",
+        bytes,
+        Default::default(),
+        PluginManifest::default(),
+    )
+    .unwrap();
+    let start = std::time::Instant::now();
+    let result = wasm.call_tool_with_cancel(
+        "spin",
+        serde_json::json!({}),
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Some(std::time::Duration::from_secs(1)),
+    );
+    assert!(
+        matches!(result, Err(RuntimeError::Timeout(1))),
+        "{result:?}"
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn protocol_batches_omit_notifications() {
+    let mut router = McpRouter::new();
+    let reply = router.handle_jsonrpc(r#"[{"jsonrpc":"2.0","method":"ping","id":1},{"jsonrpc":"2.0","method":"ping"},{"jsonrpc":"2.0","method":"tools/list","id":2}]"#).unwrap();
+    assert_eq!(reply.as_array().unwrap().len(), 2);
+    assert_eq!(reply[0]["id"], 1);
+    assert_eq!(reply[1]["id"], 2);
+    assert!(
+        router
+            .handle_jsonrpc(r#"[{"jsonrpc":"2.0","method":"ping"}]"#)
+            .is_none()
+    );
+    assert_eq!(
+        router.handle_jsonrpc("[]").unwrap()["error"]["code"],
+        -32600
+    );
+    assert_eq!(
+        router
+            .handle_jsonrpc(r#"[{"jsonrpc":"2.0","id":3,"method":"initialize"}]"#)
+            .unwrap()[0]["error"]["code"],
+        -32600
+    );
+}

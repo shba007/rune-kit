@@ -7,16 +7,18 @@
 [![Rust CI](https://github.com/shba007/rune-kit/actions/workflows/integrate.yml/badge.svg)](https://github.com/shba007/rune-kit/actions/workflows/integrate.yml)
 [![Release](https://img.shields.io/github/v/release/shba007/rune-kit?include_prereleases&logo=github)](https://github.com/shba007/rune-kit/releases)
 [![Rust Edition](https://img.shields.io/badge/rust-edition%202024-orange?logo=rust)](https://www.rust-lang.org)
-[![MCP Protocol](https://img.shields.io/badge/MCP%20protocol-2024--11--05-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Protocol](https://img.shields.io/badge/MCP%20protocol-2025--03--26-blueviolet)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
 
 ---
 
-Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`protocolVersion: 2024-11-05`). It ships as a single CLI binary (`rune`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
+Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`protocolVersion: 2025-03-26`). It ships as a single CLI binary (`rune`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
 
 In addition to executable plugins, Rune Kit natively manages declarative content artifacts called **Skills** (instruction sets, system prompts, reference packages), and features a host-managed external binary provisioning engine that automatically fetches, verifies, and configures standalone CLI utilities (such as `ffmpeg` or `yt-dlp`) on clean machines without requiring third-party package managers.
+
+See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibility, read-only policy, cancellation, timeouts and development checks.
 
 ### Features
 

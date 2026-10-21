@@ -1,7 +1,5 @@
 # Changelog
-All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
-- - -
 ## 0.1.0 - 2026-09-30
 #### Features
 - (**cli**) support host env vars for plugin config and bump to 0.1.1 - (61c818d) - Shirsendu Bairagi

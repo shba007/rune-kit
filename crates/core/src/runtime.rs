@@ -461,7 +461,7 @@ impl WasmPluginInstance {
         name: &str,
         arguments: Value,
         cancel_flag: Arc<std::sync::atomic::AtomicBool>,
-        _timeout: Option<std::time::Duration>,
+        timeout: Option<std::time::Duration>,
     ) -> Result<Value, RuntimeError> {
         let payload = json!({
             "name": name,
@@ -469,19 +469,34 @@ impl WasmPluginInstance {
         })
         .to_string();
 
-        match self.plugin.call::<&str, String>("mcp_call_tool", &payload) {
-            Ok(raw) => {
-                let parsed: Value = serde_json::from_str(&raw)?;
-                Ok(parsed)
-            }
-            Err(e) => {
-                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    Err(RuntimeError::Cancelled)
-                } else {
-                    Err(RuntimeError::Execution(e.to_string()))
+        let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let timer = timeout.map(|duration| {
+            let handle = self.plugin.cancel_handle();
+            let timed_out = timed_out.clone();
+            std::thread::spawn(move || {
+                if matches!(
+                    done_rx.recv_timeout(duration),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    timed_out.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = handle.cancel();
                 }
-            }
+            })
+        });
+        let result = self.plugin.call::<&str, String>("mcp_call_tool", &payload);
+        let _ = done_tx.send(());
+        if let Some(timer) = timer {
+            let _ = timer.join();
         }
+        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(RuntimeError::Cancelled);
+        }
+        if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RuntimeError::Timeout(timeout.unwrap().as_secs()));
+        }
+        let raw = result.map_err(|e| RuntimeError::Execution(e.to_string()))?;
+        Ok(serde_json::from_str(&raw)?)
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {

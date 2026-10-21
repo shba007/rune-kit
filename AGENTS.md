@@ -3,7 +3,7 @@
 ## 1. Overview
 
 - **What it is:** A Rust Cargo workspace implementing a high-performance Model Context Protocol (MCP) plugin runtime host and package manager CLI (`rune`).
-- **Stack:** Rust, edition 2024, workspace `resolver = 2`.
+- **Stack:** Rust, edition 2024, workspace `resolver = 3`.
 - **Artifact Model:** `rune-kit` manages two distinct artifact classes:
   - **Plugins (Code):** Executable MCP services delivering tools, resources, and prompts to MCP clients. Plugins run in one of two execution tiers:
     1. **WebAssembly (`ExecutionKind::Wasm`):** Sandboxed guest modules (`.wasm`) compiled to `wasm32-wasip1`, running in Extism/Wasmtime with optional companion native sidecars.
@@ -63,7 +63,7 @@
 
 ### 2.1 The Execution Architecture
 
-`rune-kit-core` hosts the plugin runtime across two execution models managed under `PluginInstance` (`crates/rune-kit-core/src/runtime.rs`):
+`rune-kit-core` hosts the plugin runtime across two execution models managed under `PluginInstance` (`crates/core/src/runtime.rs`):
 
 ```rust
 pub enum PluginInstance {
@@ -89,7 +89,7 @@ pub enum PluginInstance {
 
 ### 2.2 Dispatch via `McpRouter`
 
-All external client MCP interactions route through `McpRouter` (`crates/rune-kit-core/src/protocol.rs`):
+All external client MCP interactions route through `McpRouter` (`crates/core/src/protocol.rs`):
 - Single JSON-RPC stdio transport front door for clients.
 - Dispatches across registered plugin instances (`PluginInstance::Wasm` and `PluginInstance::Native`) for all six core MCP methods:
   - `tools/list` & `tools/call` (namespaced via `<namespace>__<tool_name>`)
@@ -113,7 +113,7 @@ All external client MCP interactions route through `McpRouter` (`crates/rune-kit
 
 ### 3.1 Manifest Contract (`plugin.toml`)
 
-Plugin requirements are declared in `plugin.toml` and parsed by `crates/rune-kit-core/src/manifest.rs`:
+Plugin requirements are declared in `plugin.toml` and parsed by `crates/core/src/manifest.rs`:
 
 ```toml
 [capabilities]
@@ -193,7 +193,7 @@ The CLI automatically differentiates between skills and plugins during `rune ins
 ## 5. Naming & Style Conventions
 
 - **Serde Wire Naming:**
-  - `crates/rune-kit-core/src/manifest.rs`:
+  - `crates/core/src/manifest.rs`:
     - `ExecutionKind`: `rename_all = "snake_case"` (`"wasm"`, `"native"`).
     - `ToolDefinition.input_schema`: `rename = "inputSchema"`, aliased to `input_schema`.
     - `ResourceDefinition.mime_type`: `rename = "mimeType"`, aliased to `mime_type`.
@@ -201,12 +201,12 @@ The CLI automatically differentiates between skills and plugins during `rune ins
   - `BinaryDependencySpec` deserializes `[dependencies.binaries]` using snake_case properties.
 - **Error Types (`thiserror`):**
   - All core error types are strongly-typed enums using `#[derive(Error, Debug)]`:
-    - `crates/rune-kit-core/src/package.rs` — `PackageError`.
-    - `crates/rune-kit-core/src/runtime.rs` — `RuntimeError`.
-    - `crates/rune-kit-core/src/provision.rs` — `ProvisionError`.
+    - `crates/core/src/package.rs` — `PackageError`.
+    - `crates/core/src/runtime.rs` — `RuntimeError`.
+    - `crates/core/src/provision.rs` — `ProvisionError`.
   - CLI errors remain boxed (`Result<(), Box<dyn std::error::Error>>`) and print to `eprintln!` before terminating with `std::process::exit(1)`.
 - **Output Rendering:**
-  - `crates/rune-kit-cli/src/output.rs` provides `Table` and `Column` definitions (supporting fixed and flexible widths with char-aware truncation). Header rows are verified via integration tests in `crates/rune-kit-cli/tests/output_tests.rs`.
+  - `crates/cli/src/output.rs` provides `Table` and `Column` definitions (supporting fixed and flexible widths with char-aware truncation). Header rows are verified via integration tests in `crates/cli/tests/output_tests.rs`.
   - The `SkillRow` trait abstracts fields across `InstalledSkill` and `RegistrySkillSummary` for skill table rendering.
 
 ---
