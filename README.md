@@ -2,7 +2,7 @@
 
 # Rune Kit
 
-**High-performance Model Context Protocol (MCP) plugin runtime host and package manager.**
+**High-performance Model Context Protocol (MCP) plugin and skill runtime host and package manager.**
 
 [![Rust CI](https://github.com/shba007/rune-kit/actions/workflows/integrate.yml/badge.svg)](https://github.com/shba007/rune-kit/actions/workflows/integrate.yml)
 [![Release](https://img.shields.io/github/v/release/shba007/rune-kit?include_prereleases&logo=github)](https://github.com/shba007/rune-kit/releases)
