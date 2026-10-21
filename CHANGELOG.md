@@ -68,6 +68,12 @@
 - apply code fixes [skip ci] - (340be1c) - shba007
 
 - - -
+## [v0.3.1](https://github.com/shba007/rune-kit/compare/9c4e41a1d06a5f7ea2af70450308a22ba4d4729c..v0.3.1) - 2026-10-21
+#### 🐛 Bug Fixes
+- (**protocol**) accept simultaneous MCP annotation spellings - ([9c4e41a](https://github.com/shba007/rune-kit/commit/9c4e41a1d06a5f7ea2af70450308a22ba4d4729c)) - Shirsendu Bairagi
+
+- - -
+
 ## [v0.3.0](https://github.com/shba007/rune-kit/compare/98aace83841ae8306e3577d11396a8ff6f8bcf26..v0.3.0) - 2026-10-21
 #### 🚀 Features
 - (**protocol**) upgrade MCP annotations to spec 2025-03-26 Hint suffix names (KF-1, KF-3, KF-7) - ([a907af7](https://github.com/shba007/rune-kit/commit/a907af76db749758a60fd886d11e44c3636bf677)) - Shirsendu Bairagi
