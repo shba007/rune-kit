@@ -260,14 +260,14 @@ impl PackageManager {
             PackageError::SelfUpdate("Could not determine current executable directory".to_string())
         })?;
 
-        let binary_bytes = extract_single_binary(&archive_bytes, "rune")?;
-        let temp_bin = exe_dir.join(format!(".rune-update-{}.tmp", chrono_timestamp()));
+        let binary_bytes = extract_single_binary(&archive_bytes, "rune-kit")?;
+        let temp_bin = exe_dir.join(format!(".rune-kit-update-{}.tmp", chrono_timestamp()));
         std::fs::write(&temp_bin, &binary_bytes)?;
         set_executable_permissions(&temp_bin)?;
 
         #[cfg(windows)]
         {
-            let old_backup = exe_dir.join(format!(".rune-old-{}.tmp", chrono_timestamp()));
+            let old_backup = exe_dir.join(format!(".rune-kit-old-{}.tmp", chrono_timestamp()));
             std::fs::rename(&current_exe, &old_backup)?;
             if let Err(e) = std::fs::rename(&temp_bin, &current_exe) {
                 let _ = std::fs::rename(&old_backup, &current_exe);
@@ -1085,7 +1085,11 @@ fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, Pac
     use std::io::Read;
 
     let clean_binary = binary_name.to_ascii_lowercase();
-    let expected_names = [clean_binary.clone(), format!("{}.exe", clean_binary)];
+    let mut expected_names = vec![clean_binary.clone(), format!("{}.exe", clean_binary)];
+    // Existing releases used rune/rune.exe. Keep them readable by the renamed CLI.
+    if clean_binary == "rune-kit" {
+        expected_names.extend(["rune".to_string(), "rune.exe".to_string()]);
+    }
 
     let matches_binary = |fname: &str| -> bool {
         let lower = fname.to_ascii_lowercase().replace('\\', "/");
@@ -1370,4 +1374,27 @@ fn chrono_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod cli_archive_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn self_update_accepts_new_and_legacy_binary_names() {
+        for name in ["rune-kit", "rune-kit.exe", "rune", "rune.exe"] {
+            let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file("README.txt", options).unwrap();
+            writer.write_all(b"not the binary").unwrap();
+            writer.start_file(name, options).unwrap();
+            writer.write_all(b"expected executable").unwrap();
+            let bytes = writer.finish().unwrap().into_inner();
+            assert_eq!(
+                extract_single_binary(&bytes, "rune-kit").unwrap(),
+                b"expected executable"
+            );
+        }
+    }
 }

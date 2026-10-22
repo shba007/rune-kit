@@ -14,7 +14,7 @@
 
 ---
 
-Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`protocolVersion: 2025-03-26`). It ships as a single CLI binary (`rune`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
+Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`protocolVersion: 2025-03-26`). It ships as a single CLI binary (`rune-kit`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
 
 In addition to executable plugins, Rune Kit natively manages declarative content artifacts called **Skills** (instruction sets, system prompts, reference packages), and features a host-managed external binary provisioning engine that automatically fetches, verifies, and configures standalone CLI utilities (such as `ffmpeg` or `yt-dlp`) on clean machines without requiring third-party package managers.
 
@@ -27,7 +27,7 @@ See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibilit
 - 📦 **Two-Tier Artifact Management:** Manage executable code plugins (`installed.json`) alongside declarative content skills (`installed_skills.json`) with automated dependency resolution.
 - 🛠️ **Host-Managed Binary Engine:** Auto-download, SHA-256 verify, unpack, and inject external CLI utilities (`_bin/<name>/<version>/`) into plugin execution environments.
 - 🔒 **Fine-Grained Capabilities:** Restrict network egress (`allowed_hosts`), sandbox filesystem access (`allowed_dir`), and allowlist external binary execution via declarative manifests (`plugin.toml`).
-- 🔄 **Autonomous Self-Updates:** Update the `rune` binary directly from GitHub releases across Linux (GNU/musl), macOS (Apple Silicon/Intel), and Windows.
+- 🔄 **Autonomous Self-Updates:** Update the `rune-kit` binary directly from GitHub releases across Linux (GNU/musl), macOS (Apple Silicon/Intel), and Windows.
 
 ---
 
@@ -85,11 +85,58 @@ See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibilit
 | Crate | Type | Directory | Description |
 | :--- | :--- | :--- | :--- |
 | [`rune-kit-core`](file:///crates/core) | Library | `crates/core` | Core runtime host, `McpRouter`, Extism WASM engine, native sidecar supervision, artifact manager, and binary provisioner. |
-| [`rune-kit-cli`](file:///crates/cli) | Binary & Library | `crates/cli` | The `rune` CLI binary (`src/main.rs`) and CLI library routines (`src/lib.rs`) for command parsing and table rendering. |
+| [`rune-kit-cli`](file:///crates/cli) | Binary & Library | `crates/cli` | The `rune-kit` CLI binary (`src/main.rs`) and CLI library routines (`src/lib.rs`) for command parsing and table rendering. |
 
 ---
 
 ## Installation
+
+### Install script (next release)
+
+These installers and the renamed CLI are prepared in source and are not yet on
+`main` or published in a release. After that release, install without Rust or admin rights:
+
+Windows (PowerShell 5.1 or newer):
+
+```powershell
+irm https://raw.githubusercontent.com/shba007/rune-kit/main/install.ps1 | iex
+```
+
+Linux / macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/shba007/rune-kit/main/install.sh | sh
+```
+
+Windows installs `rune-kit.exe` in `%LOCALAPPDATA%\Programs\rune-kit` and adds
+that folder to your user PATH and the current PowerShell session. Linux/macOS
+install `rune-kit` in `~/.local/bin`; the script prints the PATH command when needed.
+Re-running installs the selected release again. Downloads are verified before an
+existing executable is replaced. Stop active gateways before upgrading on Windows.
+
+Override `RUNE_KIT_VERSION` (for example `v0.3.1`), `RUNE_KIT_INSTALL_DIR`, or
+`RUNE_KIT_BASE_URL` (release-download URL or local mirror directory). A mirror
+requires an explicit version and an archive plus its `.sha256` file. On Windows,
+`RUNE_KIT_NO_MODIFY_PATH=1` leaves both user and session PATH unchanged.
+
+For example, to pin a version in PowerShell:
+
+```powershell
+$env:RUNE_KIT_VERSION = 'v0.3.1'
+# Run the installer after it is published.
+```
+
+Windows also accepts older `rune-<tag>-<target>.zip` assets and verifies their
+GitHub SHA-256 digest when no checksum sidecar exists, installing the executable
+as `rune-kit.exe`. Older binaries still print their original `rune <version>`.
+Linux/macOS require checksum sidecars, introduced with the renamed release.
+
+**Migration:** change MCP client commands from `rune` to `rune-kit` and restart
+terminals/clients after installing. No `rune` alias is installed and unrelated old
+executables are not deleted. Plugin, skill and cache data already live in the
+`rune-kit` data folder below, so no data move is needed. Old installs can be removed
+manually after clients have switched. Self-update accepts both old and new archive
+binary names. The command rename should ship as the next minor release (0.4.0).
 
 ### Prebuilt Binaries
 
@@ -111,15 +158,15 @@ cd rune-kit
 # Compile the workspace in release mode
 cargo build --release
 
-# Install the `rune` binary to your Cargo binary path (~/.cargo/bin)
+# Install the `rune-kit` binary to your Cargo binary path (~/.cargo/bin)
 cargo install --path crates/cli
 ```
 
 Verify the installation:
 
 ```bash
-rune --version
-# Output: rune 0.2.2
+rune-kit --version
+# Output: rune-kit <version>
 ```
 
 ---
@@ -127,7 +174,7 @@ rune --version
 ## CLI Reference
 
 ```text
-Usage: rune <COMMAND>
+Usage: rune-kit <COMMAND>
 
 Commands:
   run          Start the MCP server gateway over stdio
@@ -137,27 +184,27 @@ Commands:
   available    List available artifacts in the remote registry
   search       Search artifacts in the registry by keyword across names and descriptions
   update       Update installed artifacts from the registry or inspect update availability
-  self-update  Self-update the rune CLI binary to the latest release
+  self-update  Self-update the rune-kit CLI binary to the latest release
   help         Print this message or the help of the given subcommand(s)
 ```
 
-### 1. `rune run`
+### 1. `rune-kit run`
 
 Starts the MCP server gateway over stdio. Dispatches JSON-RPC requests across one or all registered plugins.
 
 ```bash
 # Run a single plugin by installed name
-rune run git
+rune-kit run git
 
 # Run a local plugin directly (file extension determines runtime: .wasm -> WASM, other -> Native)
-rune run ./dist/my-plugin.wasm
-rune run ./dist/native-worker.exe
+rune-kit run ./dist/my-plugin.wasm
+rune-kit run ./dist/native-worker.exe
 
 # Gateway Mode: Serve all installed plugins simultaneously under namespaced identifiers
-rune run --all
+rune-kit run --all
 
 # Inject key-value parameters passed to the plugin runtime
-rune run git -p allowed_dir=/workspace -p default_branch=main
+rune-kit run git -p allowed_dir=/workspace -p default_branch=main
 ```
 
 #### Flags & Options
@@ -170,36 +217,36 @@ rune run git -p allowed_dir=/workspace -p default_branch=main
 | `-h`, `--help` | `bool` | `false` | Print help information. |
 
 > [!NOTE]
-> Either `[PLUGIN]` or `--all` must be provided. If neither is specified, `rune run` exits with code `1`.
+> Either `[PLUGIN]` or `--all` must be provided. If neither is specified, `rune-kit run` exits with code `1`.
 
 #### Environment Variable Parameter Injection
 
-In addition to `-p KEY=VALUE`, `rune run` automatically inspects the host environment and forwards parameters into the plugin context:
+In addition to `-p KEY=VALUE`, `rune-kit run` automatically inspects the host environment and forwards parameters into the plugin context:
 1. **Prefixed Variables:** Any variable starting with `RUNE_PARAM_<NAME>` has the prefix stripped and the remaining key lowercased (e.g. `RUNE_PARAM_API_KEY=xyz` becomes `api_key=xyz`).
 2. **Allowlisted System Variables:** The following host environment variables are forwarded automatically (lowercased): `ALLOWED_DIR`, `OUTPUT_DIR`, `OUTPUT_DIRECTORY`, `COOKIES_DIR`, `COOKIES_FILE`, `DEFAULT_TIMEZONE`, `REPO_PATH`, `MEMORY_FILE`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`.
 
 ---
 
-### 2. `rune install`
+### 2. `rune-kit install`
 
 Installs a plugin or skill from the remote registry, an HTTP(S) URL, or a local file path.
 
 ```bash
 # Install a plugin from the registry (defaulting to WASM, falls back if needed)
-rune install git
+rune-kit install git
 
 # Prefer native companion/standalone binary if available
-rune install browser --native
+rune-kit install browser --native
 
 # Pin a specific version
-rune install git --version 0.1.2
+rune-kit install git --version 0.1.2
 
 # Install from a local file (.wasm, .zip, .tar.gz, .exe)
-rune install ./dist/rune_memory.wasm
+rune-kit install ./dist/rune_memory.wasm
 
 # Install a declarative skill (prompts/instructions) from file or markdown bundle
-rune install ./skills/code-review.md
-rune install #prompt-engineering
+rune-kit install ./skills/code-review.md
+rune-kit install #prompt-engineering
 ```
 
 #### Flags & Options
@@ -213,19 +260,19 @@ rune install #prompt-engineering
 
 #### Artifact Differentiation (Plugins vs. Skills)
 
-`rune install` automatically routes targets to the appropriate subsystem:
+`rune-kit install` automatically routes targets to the appropriate subsystem:
 - **Skill Detection:** If `<TARGET>` ends with `.md`, `.txt`, `.rst`, `.markdown`, contains double underscores (`__`), starts with `#`, or matches an entry with `type: "skill"` in the registry, it is installed by `SkillManager` into `skills/<name>/`.
 - **Plugin Detection:** All other targets route to `PackageManager` into `plugins/`. Any companion native binaries (`rune-<name>-native` or `<name>-native`) and `plugin.toml` files in the same directory are bundled alongside it.
 
 ---
 
-### 3. `rune uninstall`
+### 3. `rune-kit uninstall`
 
 Removes an installed plugin or skill and purges its local binaries and lockfile entries.
 
 ```bash
-rune uninstall git
-rune uninstall code-review
+rune-kit uninstall git
+rune-kit uninstall code-review
 ```
 
 | Flag | Type | Default | Description |
@@ -235,33 +282,33 @@ rune uninstall code-review
 
 ---
 
-### 4. `rune list`
+### 4. `rune-kit list`
 
 Displays all installed plugins and skills in formatted terminal tables, including version, build types (`wasm`, `native`, or `wasm, native`), and sources.
 
 ```bash
-rune list
+rune-kit list
 ```
 
 ---
 
-### 5. `rune available`
+### 5. `rune-kit available`
 
 Queries the remote registry and lists all available plugins and skills, displaying current local installed version vs. remote latest version.
 
 ```bash
-rune available
+rune-kit available
 ```
 
 ---
 
-### 6. `rune search`
+### 6. `rune-kit search`
 
 Performs a case-insensitive search across names, descriptions, and tags in the remote registry.
 
 ```bash
-rune search git
-rune search prompt
+rune-kit search git
+rune-kit search prompt
 ```
 
 | Flag | Type | Default | Description |
@@ -271,19 +318,19 @@ rune search prompt
 
 ---
 
-### 7. `rune update` (alias: `outdated`)
+### 7. `rune-kit update` (alias: `outdated`)
 
 Inspects or updates installed plugins and skills against the remote registry.
 
 ```bash
 # Check for updates without downloading
-rune update --check
+rune-kit update --check
 
 # Update all outdated artifacts to the latest version
-rune update
+rune-kit update
 
 # Update only specific artifacts
-rune update git memory
+rune-kit update git memory
 ```
 
 | Flag | Type | Default | Description |
@@ -294,19 +341,19 @@ rune update git memory
 
 ---
 
-### 8. `rune self-update`
+### 8. `rune-kit self-update`
 
-Checks for and updates the running `rune` CLI binary directly from GitHub releases matching the current OS target triple.
+Checks for and updates the running `rune-kit` CLI binary directly from GitHub releases matching the current OS target triple.
 
 ```bash
 # Inspect whether a newer CLI binary exists
-rune self-update --check
+rune-kit self-update --check
 
 # Perform the update
-rune self-update
+rune-kit self-update
 
 # Force reinstall or pin a specific version
-rune self-update --version 0.2.1 --force
+rune-kit self-update --version 0.2.1 --force
 ```
 
 | Flag | Type | Default | Description |

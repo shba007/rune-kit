@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (target 0.4.0)
+- Rename the CLI to `rune-kit` and release archives to `rune-kit-<tag>-<target>`. Update MCP client commands from `rune` to `rune-kit`; existing rune-kit data folders are preserved.
+- Add verified, per-user Windows and Linux/macOS installers, version pinning and checksum sidecars.
+- Self-update accepts both canonical rune-kit and legacy rune archive binaries.
+
+
 ## 0.3.1 - 2026-10-21
 - Accept equal canonical and legacy annotation keys together from Rune Tools in native and WASM discovery. Reject conflicting or non-boolean facts with a diagnostic.
 - Report discovery failures as JSON-RPC -32000 instead of successful empty/partial lists. Preserve inputSchema and x-rune-rules.

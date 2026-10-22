@@ -57,6 +57,9 @@ jobs:
       - name: ✅ Test Code
         run: cargo test --workspace
 
+      - name: Installer smoke tests
+        run: python3 scripts/test_installers.py --binary target/release/rune-kit
+
       # 6. Lint Code (Clippy)
       - name: 🧹 Lint Code
         run: cargo clippy --workspace --all-targets -- -D warnings

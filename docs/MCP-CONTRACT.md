@@ -1,5 +1,8 @@
 # MCP gateway contract
 
+The CLI executable is `rune-kit` (`rune-kit.exe` on Windows). User data remains
+in the existing `rune-kit` data directory; no `rune` alias is installed.
+
 The gateway advertises protocol version `2025-03-26`. Tools are namespaced as
 `<namespace>__<tool>`, resources as `rune://<namespace>/<uri>`. Targeted contract
 tests are not full MCP conformance certification.

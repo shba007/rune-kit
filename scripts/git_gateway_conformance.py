@@ -1,6 +1,6 @@
 """Read-only integration check against a real rune-git-native artifact.
 
-python scripts/git_gateway_conformance.py --rune target/debug/rune.exe --plugin /path/rune-git-native.exe
+python scripts/git_gateway_conformance.py --rune-kit target/debug/rune-kit.exe --plugin /path/rune-git-native.exe
 """
 import argparse
 import hashlib
@@ -123,7 +123,7 @@ def run(rune, plugin):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--rune', type=Path, required=True)
+    parser.add_argument('--rune-kit', '--rune', dest='rune', type=Path, required=True)
     parser.add_argument('--plugin', type=Path, required=True)
     parser.add_argument('--output', type=Path)
     options = parser.parse_args()

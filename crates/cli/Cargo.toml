@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "rune"
+name = "rune-kit"
 path = "src/main.rs"
 
 [lib]

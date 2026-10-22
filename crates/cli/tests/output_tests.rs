@@ -51,21 +51,21 @@ fn update_table_header_matches_layout() {
 
 #[test]
 fn test_cli_binary_version() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune-kit"))
         .arg("--version")
         .output()
-        .expect("Failed to execute rune binary");
+        .expect("Failed to execute rune-kit binary");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("rune "));
+    assert!(stdout.starts_with("rune-kit "));
 }
 
 #[test]
 fn test_cli_list_json() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune-kit"))
         .args(["list", "--json"])
         .output()
-        .expect("Failed to execute rune list --json");
+        .expect("Failed to execute rune-kit list --json");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
@@ -78,10 +78,10 @@ fn test_cli_list_json() {
 
 #[test]
 fn test_cli_global_json_flag() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune-kit"))
         .args(["--json", "list"])
         .output()
-        .expect("Failed to execute rune --json list");
+        .expect("Failed to execute rune-kit --json list");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
@@ -91,10 +91,10 @@ fn test_cli_global_json_flag() {
 
 #[test]
 fn test_cli_search_json() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune-kit"))
         .args(["search", "nonexistent_query_xyz", "--json"])
         .output()
-        .expect("Failed to execute rune search --json");
+        .expect("Failed to execute rune-kit search --json");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
@@ -106,10 +106,10 @@ fn test_cli_search_json() {
 
 #[test]
 fn test_cli_run_help_flags() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune-kit"))
         .args(["run", "--help"])
         .output()
-        .expect("Failed to execute rune run --help");
+        .expect("Failed to execute rune-kit run --help");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--read-only"));

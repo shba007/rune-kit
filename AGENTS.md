@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-- **What it is:** A Rust Cargo workspace implementing a high-performance Model Context Protocol (MCP) plugin runtime host and package manager CLI (`rune`).
+- **What it is:** A Rust Cargo workspace implementing a high-performance Model Context Protocol (MCP) plugin runtime host and package manager CLI (`rune-kit`).
 - **Stack:** Rust, edition 2024, workspace `resolver = 3`.
 - **Artifact Model:** `rune-kit` manages two distinct artifact classes:
   - **Plugins (Code):** Executable MCP services delivering tools, resources, and prompts to MCP clients. Plugins run in one of two execution tiers:
@@ -16,7 +16,7 @@
   - **Host-Managed External Binaries:** External CLI dependencies (e.g., `ffmpeg`, `yt-dlp`, `gallery-dl`) are downloaded, verified, cached, and managed by **`rune-kit`**, not by `rune-tools`. `rune-kit` provisions verified static binaries on clean user machines and exposes resolved executable paths to the plugin runtime.
 - **Entry Points:**
   - `rune-kit-core` — Library crate (the runtime). Contains no `[[bin]]`.
-  - `rune-kit-cli` — Both a binary crate (`[[bin]] name = "rune"` → `src/main.rs`) and a library crate (`[lib] name = "rune_kit_cli"` → `src/lib.rs`). All CLI command dispatch and table rendering live in `lib.rs`; `main.rs` is a wrapper invoking `rune_kit_cli::main()` and propagating non-zero exit codes on failure.
+  - `rune-kit-cli` — Both a binary crate (`[[bin]] name = "rune-kit"` → `src/main.rs`) and a library crate (`[lib] name = "rune_kit_cli"` → `src/lib.rs`). All CLI command dispatch and table rendering live in `lib.rs`; `main.rs` is a wrapper invoking `rune_kit_cli::main()` and propagating non-zero exit codes on failure.
 - **Dependency Direction is One-Way:** `rune-kit-cli` → `rune-kit-core`. `rune-kit-core` never depends on the CLI.
 
 ---
@@ -25,7 +25,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│                    rune-kit-cli ("rune")                     │
+│                    rune-kit-cli ("rune-kit")                     │
 └──────────────────────────────┬───────────────────────────────┘
                                │
                                ▼
@@ -183,7 +183,7 @@ In addition to executable plugins, `rune-kit` natively manages **Skills**—reus
 
 ### 4.2 Target Detection & Installation
 
-The CLI automatically differentiates between skills and plugins during `rune install <target>`:
+The CLI automatically differentiates between skills and plugins during `rune-kit install <target>`:
 - **Skill Detection:** Targets ending in `.md`, `.txt`, `.rst`, `.markdown`, containing double underscores (`__`), or beginning with `#` route to `SkillManager::install_skill`.
 - **Packaging:** Skills may be installed as raw standalone text files or compressed bundles (`.zip`, `.tar.gz`).
 - **Integrity Tracking:** constituent files are extracted into `skills/<name>/` and hashed (`SkillFile.sha256`) to maintain lockfile verification.
@@ -215,7 +215,7 @@ The CLI automatically differentiates between skills and plugins during `rune ins
 
 ### 6.1 Plugin Installation and Registration
 
-During `rune install <target>`:
+During `rune-kit install <target>`:
 1. **Target Inspection:**
    - **Local `.wasm`:** Installed as `ExecutionKind::Wasm`. Companion sidecars (`rune-<name>-native` or `<name>-native`) and `plugin.toml` files in the same directory are automatically packaged alongside it.
    - **Local Native Binary / Archive (`.exe`, ELF, `.zip`, `.tar.gz`):** Installed as `ExecutionKind::Native` when native OS capabilities are required.
@@ -240,16 +240,16 @@ Whether operating as a WASM companion or as a standalone native server:
 
 ### 6.4 Skill Installation and Lifecycle
 
-1. `rune install <target>` identifies the artifact as content.
+1. `rune-kit install <target>` identifies the artifact as content.
 2. `SkillManager` downloads or copies files into `skills/<name>/`.
 3. Member files are hashed (SHA-256) and logged in `installed_skills.json`.
-4. Installed skills are listed with `rune list` and updated with `rune update`.
+4. Installed skills are listed with `rune-kit list` and updated with `rune-kit update`.
 
 ---
 
 ## 7. Known Inconsistencies / Exceptions
 
-- **`rune self-update` Exits 0 on Failure (Intentional):**
+- **`rune-kit self-update` Exits 0 on Failure (Intentional):**
   The `Commands::SelfUpdate` handler in `lib.rs` logs errors to `eprintln!` and returns `Ok(())` to prevent automated background updates from failing parent processes.
 - **Sidecar JSON-RPC Serialization Constraint:**
   Native sidecar and standalone processes communicate via single-threaded stdio pipes per plugin instance. Calls are serialized sequentially per process.

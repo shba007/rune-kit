@@ -71,30 +71,41 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: ⚙️ Build Release Binary
-        run: cargo build --release -p rune-kit-cli --target ${{ matrix.target }}
+        run: cargo build --locked --release -p rune-kit-cli --target ${{ matrix.target }}
 
       - name: 📦 Package Binary (Unix)
         if: matrix.archive_ext == 'tar.gz'
         shell: bash
         run: |
-          tar czf rune-${{ env.VERSION }}-${{ matrix.target }}.tar.gz \
-            -C target/${{ matrix.target }}/release rune
+          tar czf rune-kit-${{ env.VERSION }}-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release rune-kit
+          ARCHIVE="rune-kit-${{ env.VERSION }}-${{ matrix.target }}.tar.gz"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
 
       - name: 📦 Package Binary (Windows)
         if: matrix.archive_ext == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/rune.exe `
-            -DestinationPath rune-${{ env.VERSION }}-${{ matrix.target }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/rune-kit.exe `
+            -DestinationPath rune-kit-${{ env.VERSION }}-${{ matrix.target }}.zip
+          $archive = "rune-kit-${{ env.VERSION }}-${{ matrix.target }}.zip"
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
 
       - name: 📝 Generate artifact attestation
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: 'rune-${{ env.VERSION }}-${{ matrix.target }}.${{
+          subject-path: 'rune-kit-${{ env.VERSION }}-${{ matrix.target }}.${{
             matrix.archive_ext }}'
 
       - name: ⬆️ Upload to Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.VERSION }}
-          files: rune-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+          files: |
+            rune-kit-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+            rune-kit-${{ env.VERSION }}-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256

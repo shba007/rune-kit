@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 
 #[derive(Parser)]
-#[command(name = "rune", version, about = "Rune MCP Engine & Package Manager")]
+#[command(
+    name = "rune-kit",
+    version,
+    about = "Rune MCP Engine & Package Manager"
+)]
 pub struct Cli {
     /// Output response as machine-readable JSON
     #[arg(long, global = true)]
@@ -63,7 +67,7 @@ pub enum Commands {
         #[arg(short, long)]
         check: bool,
     },
-    /// Self-update the rune CLI binary to the latest release
+    /// Self-update the rune-kit CLI binary to the latest release
     SelfUpdate {
         /// Check if an update is available without downloading
         #[arg(short, long)]
@@ -399,7 +403,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let has_content = !lockfile.plugins.is_empty() || !skill_lockfile.skills.is_empty();
             if !has_content {
                 println!(
-                    "No artifacts installed. Use `rune install <name>` for plugins or `rune install <path>` for skills."
+                    "No artifacts installed. Use `rune-kit install <name>` for plugins or `rune-kit install <path>` for skills."
                 );
                 return Ok(());
             }
@@ -822,7 +826,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Current version: v{}", current_ver);
                 println!("Release target:  {}", tag);
                 if is_newer_version(latest_clean, current_ver) {
-                    println!("\nUpdate available! Run `rune self-update` to install.");
+                    println!("\nUpdate available! Run `rune-kit self-update` to install.");
                 } else if latest_clean == current_ver {
                     println!("\nYou are already on the latest version.");
                 } else {
@@ -845,7 +849,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }))?
                         );
                     } else {
-                        println!("Successfully updated rune CLI to {}!", new_tag);
+                        println!("Successfully updated rune-kit CLI to {}!", new_tag);
                     }
                 }
                 Err(rune_kit_core::PackageError::SelfUpdate(msg)) => {
