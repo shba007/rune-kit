@@ -1,68 +1,75 @@
 name: Rust CI
-
-permissions:
-  contents: read
-
 on:
   push:
-    branches:
-      - develop
+    branches: [develop]
   pull_request:
-    branches:
-      - develop
-      - main
-
-env:
-  CARGO_TERM_COLOR: always
-
+    branches: [develop, main]
+permissions:
+  contents: read
 jobs:
-  build:
-    if: >
-      !(
-        contains(github.event.head_commit.message, 'ci(release):') ||
-        contains(github.event.head_commit.message, '[skip ci]') ||
-        startsWith(github.event.head_commit.message, 'Merge pull request') ||
-        startsWith(github.event.head_commit.message, 'Merge branch')
-      )
+  checks:
+    uses: ./.github/workflows/checks.yml
+  prepare-release:
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-preparation
+      cancel-in-progress: false
+    env:
+      CARGO_HUSKY_DONT_INSTALL_HOOKS: 'true'
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
-      - name: 📥 Checkout Repo
-        uses: actions/checkout@v7
+      - name: Require event-capable authentication
+        run: test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required (contents and pull requests write); the built-in token does not trigger PR validation.' >&2; exit 1; }
+      - uses: actions/checkout@v7
         with:
+          ref: develop
           fetch-depth: 0
-          lfs: true
-
-      # 1. Setup Rust with clippy, rustfmt, and automatic dependency caching
-      - name: 🛠️ Setup Rust Toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2
-        with:
-          components: rustfmt, clippy
-
-      # 3. Verify Cargo.lock is synced with Cargo.toml (equivalent to --frozen-lockfile)
-      - name: 📦 Verify Dependencies
-        run: cargo fetch --locked
-
-      # 4. Build Artifact
-      - name: ⚙️ Build Artifact
-        run: cargo build --release --workspace
-
-      # 5. Test Code
-      - name: ✅ Test Code
-        run: cargo test --workspace
-
-      - name: Validate release note extraction
+          token: ${{ secrets.GH_TOKEN }}
+      - name: Confirm this exact development revision passed checks
+        id: revision
         run: |
-          python3 scripts/test_release_notes.py
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
-          python3 scripts/release_notes.py "$VERSION"
-
-      - name: Installer smoke tests
-        run: python3 scripts/test_installers.py --binary target/release/rune-kit
-
-      # 6. Lint Code (Clippy)
-      - name: 🧹 Lint Code
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # 7. Format Code
-      - name: 🧼 Format Code
-        run: cargo fmt --all --check
+          if [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            echo 'A newer develop revision will prepare the release after its own checks.'
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.revision.outputs.current == 'true'
+      - uses: taiki-e/install-action@v2.87.28
+        if: steps.revision.outputs.current == 'true'
+        with:
+          tool: cocogitto@7.0.0
+      - name: Prepare deterministic release files
+        if: steps.revision.outputs.current == 'true'
+        id: plan
+        run: |
+          mkdir -p target
+          cargo xtask release-plan --apply > target/release-plan.json
+          echo "needed=$(jq -r .needed target/release-plan.json)" >> "$GITHUB_OUTPUT"
+          VERSION=$(jq -r .version target/release-plan.json)
+          if [ "$(jq -r .needed target/release-plan.json)" = true ]; then
+            cargo metadata --locked --no-deps --format-version 1 > /dev/null
+            cargo xtask release-notes "$VERSION" --output target/release-body.md
+          fi
+      - name: Open or update the single preparation PR
+        if: steps.plan.outputs.needed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GH_TOKEN }}
+          branch: release/update-version
+          base: develop
+          delete-branch: true
+          title: 'ci(release): update version'
+          commit-message: 'ci(release): update version'
+          body-path: target/release-body.md
+          add-paths: |
+            Cargo.toml
+            Cargo.lock
+            CHANGELOG.md
+            .release-preparation.json

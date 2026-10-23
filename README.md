@@ -177,6 +177,7 @@ Usage: rune-kit <COMMAND>
 
 Commands:
   run          Start the MCP server gateway over stdio
+  tui          Inspect installed plugins and run local discovery probes
   install      Install an artifact from registry, URL, or local path
   uninstall    Uninstall an installed artifact (plugin or skill)
   list         List installed artifacts (plugins and skills)
@@ -575,3 +576,12 @@ Copyright (c) 2024 Shirsendu Bairagi.
 [![Contributors](https://contrib.rocks/image?repo=shba007/rune-kit)](https://github.com/shba007/rune-kit/graphs/contributors)
 
 Managed storage defaults to `~/rune/tools` (plugins in `plugins/`). Set an absolute `RUNE_KIT_DATA_DIR` to override it. Legacy platform data is copied on first use, with originals retained; conflicts stop migration. See [MCP contract](docs/MCP-CONTRACT.md) for the new request format.
+
+
+## Terminal inventory
+
+Run `rune-kit tui` to inspect installed plugins, real local discovery, capabilities and diagnostics. Use arrows/j/k, Tab, PgUp/PgDn, r to refresh and q to quit. `rune-kit tui --once` and `rune-kit tui --json` work without an interactive terminal. The dashboard does not monitor Studio's gateway and never starts during MCP stdio. See [dashboard controls and boundaries](docs/TUI.md).
+
+## Releases and contributor tooling
+
+Successful develop CI prepares one reviewed release/update-version PR. The owner merges it into develop, then promotes develop to main with a merge commit or fast-forward. Main automation publishes the prepared version and exact changelog notes; release publication triggers platform artifacts. Merging into develop alone does not publish. Agents leave changes unstaged and uncommitted. Rust-only preparation previews and the required token/settings are documented in [the release flow](docs/RELEASING.md).

@@ -484,3 +484,27 @@ fn modern_requests_validate_version_identity_and_legacy_handshake() {
         -32602
     );
 }
+
+#[test]
+fn dashboard_wasm_discovery_budget_interrupts_guest() {
+    use rune_kit_core::runtime::{PluginInstance, RuntimeError, WasmPluginInstance};
+    let bytes = wat::parse_str(r#"(module (func (export "mcp_list_tools") (result i32) (loop $spin (br $spin)) i32.const 0))"#).unwrap();
+    let wasm = WasmPluginInstance::load_from_bytes(
+        "inventory-timeout",
+        bytes,
+        Default::default(),
+        PluginManifest::default(),
+    )
+    .unwrap();
+    let mut instance = PluginInstance::Wasm(Box::new(wasm));
+    let start = std::time::Instant::now();
+    let result = instance.discover_tools(
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        std::time::Duration::from_secs(1),
+    );
+    assert!(
+        matches!(result, Err(RuntimeError::Timeout(1))),
+        "{result:?}"
+    );
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+}

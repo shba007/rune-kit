@@ -853,7 +853,15 @@ impl NativeSidecar {
     }
 
     pub fn list_tools(&mut self) -> Result<Vec<ToolDefinition>, RuntimeError> {
-        let resp = self.send_request("tools/list", json!({}))?;
+        self.list_tools_with_cancel(Arc::new(std::sync::atomic::AtomicBool::new(false)), None)
+    }
+
+    pub fn list_tools_with_cancel(
+        &mut self,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Vec<ToolDefinition>, RuntimeError> {
+        let resp = self.send_request_with_cancel("tools/list", json!({}), cancel, timeout)?;
         if let Some(err) = resp.get("error") {
             return Err(RuntimeError::Execution(format!(
                 "Native process tools/list error: {}",
@@ -1021,6 +1029,48 @@ impl PluginInstance {
             .map(PluginInstance::Native)
     }
 
+    /// A bounded inventory probe; does not keep a gateway or execute tools.
+    pub fn discover_tools(
+        &mut self,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<ToolDefinition>, RuntimeError> {
+        match self {
+            Self::Native(native) => native.list_tools_with_cancel(cancel, Some(timeout)),
+            Self::Wasm(wasm) => {
+                let handle = wasm.get_cancel_handle();
+                let stop = cancel.clone();
+                let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+                let timer = std::thread::spawn(move || {
+                    let start = std::time::Instant::now();
+                    loop {
+                        match done_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                return false;
+                            }
+                            _ => {}
+                        }
+                        if stop.load(std::sync::atomic::Ordering::Relaxed)
+                            || start.elapsed() >= timeout
+                        {
+                            let _ = handle.cancel();
+                            return true;
+                        }
+                    }
+                });
+                let result = wasm.list_tools();
+                let _ = done_tx.send(());
+                let timed_out = timer.join().unwrap_or(true);
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(RuntimeError::Cancelled);
+                }
+                if timed_out {
+                    return Err(RuntimeError::Timeout(timeout.as_secs()));
+                }
+                result
+            }
+        }
+    }
     pub fn get_info(&mut self) -> Result<PluginInfo, RuntimeError> {
         match self {
             PluginInstance::Wasm(w) => w.get_info(),

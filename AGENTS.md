@@ -136,7 +136,7 @@ description = "Stream extraction"
 
 1. **Storage Cache:** External tools are maintained in a shared, host-managed cache:
    ```text
-   dirs::data_dir()/rune-kit/_bin/
+   ~/rune/tools/_bin/
    ├── ffmpeg/
    │   └── 6.1.1/
    │       ├── ffmpeg (executable, mode 0755)
@@ -177,7 +177,7 @@ In addition to executable plugins, `rune-kit` natively manages **Skills**—reus
 | :--- | :--- | :--- |
 | **Nature** | Executable MCP servers (WASM or Native) | Declarative markdown, prompts, instructions |
 | **Execution** | Extism WASM runtime / OS process | Non-executable static content |
-| **Storage** | `dirs::data_dir()/rune-kit/plugins/` | `dirs::data_dir()/rune-kit/skills/<name>/` |
+| **Storage** | `~/rune/tools/plugins/` | `~/rune/tools/skills/<name>/` |
 | **Lockfile** | `installed.json` (`Lockfile`) | `installed_skills.json` (`SkillLockfile`) |
 | **Registry Schema** | `RegistryPluginSummary` | `RegistrySkillSummary` (includes `author`, `tags`) |
 
@@ -266,6 +266,14 @@ Whether operating as a WASM companion or as a standalone native server:
 *Generated from confirmed architectural contracts and repository implementations.*  
 *Last updated: 2026-09-21.*
 
-## Owner-controlled delivery
+## Delivery and release ownership
 
-Implement and test locally; leave changes uncommitted and unpushed. Do not stage, commit, push, merge, create branches or tags, publish releases, or dispatch publishing workflows. The owner performs those actions. Prepare the version and user-facing CHANGELOG section before the owner commits. Release notes must extract that exact version section; never regenerate from Git history.
+Agents implement/test locally and leave every change unstaged and uncommitted. Do not stage, commit, push, merge, tag, publish, or dispatch publishing workflows. The owner commits/pushes development work and reviews/merges release PRs.
+
+GitHub Actions is authorized to calculate versions, update manifests/lockfiles/changelogs, commit/push the dedicated release/update-version branch, and open/update its single PR targeting develop. Successful checks precede preparation. The PR title and automation commit are `ci(release): update version`. Actions publishes tags/releases/artifacts only after the owner promotes the prepared release to main. No AI service belongs in this flow.
+
+See docs/RELEASING.md for the complete develop-to-main sequence, authentication, merge strategy, and Rust dry-run commands. Promotion to main must preserve commit ancestry (merge commit or fast-forward; no squash/rebase). Merging preparation into develop alone does not publish. Main publication is guarded by preparation metadata rather than a commit-message marker.
+
+Prefer Rust for repository utilities and protocol/installer test harnesses. Bootstrap install.ps1/install.sh remain thin and require no end-user Rust installation. Public change descriptions must contain substantive user-facing behavior, compatibility and migration; exclude internal planning labels and bot bookkeeping. Publication extracts the exact version section generated during preparation and never rewrites published history.
+
+The TUI is explicit (`rune-kit tui`), observes only installed inventory and its own local discovery, and must never start during MCP stdio operation. Do not invent live health, usage, request history or visibility into Studio's gateway.

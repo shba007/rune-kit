@@ -1,45 +1,46 @@
 name: Rune Release
-
-permissions:
-  contents: write
-
 on:
   push:
-    tags:
-      - "v*"
-
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: main-release
+  cancel-in-progress: false
 jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
   release:
+    needs: checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      CARGO_HUSKY_DONT_INSTALL_HOOKS: 'true'
     steps:
-      - name: 📥 Checkout Repo
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: 🛠️ Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 🔎 Read Workspace Version
-        id: version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2.87.28
+        with:
+          tool: cocogitto@7.0.0
+      - name: Verify owner-promoted release matches prepared history and notes
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
-          test "$GITHUB_REF_NAME" = "v$VERSION" || { echo "Tag does not match workspace version" >&2; exit 1; }
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Validate release notes
-        run: python3 scripts/release_notes.py "${{ steps.version.outputs.version }}" --output release-notes.md
-
-      # Uses a PAT rather than the default GITHUB_TOKEN: a release created
-      # with the default token does not trigger other workflows' `on: release:
-      # published` events (GitHub's own loop-prevention), which would silently
-      # stop deploy.yml from ever running.
-      - name: 📝 Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required to publish a release that triggers artifact publication.' >&2; exit 1; }
+          mkdir -p target
+          cargo xtask release-check > target/release-check.json
+          VERSION=$(jq -r .version target/release-check.json)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          cargo xtask release-notes "$VERSION" --output target/release-notes.md
+      - name: Publish matching tag and release using the prepared notes
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --verify-tag \
-            --title "${{ steps.version.outputs.tag }}" \
-            --notes-file release-notes.md
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "Release v$VERSION already exists; leaving its notes and assets unchanged."
+          else
+            gh release create "v$VERSION" --target "$GITHUB_SHA" \
+              --title "v$VERSION" --notes-file target/release-notes.md
+          fi
+      # GH_TOKEN is intentionally used above: PAT/App release events trigger
+      # deploy.yml's release:published workflow; the default token does not.

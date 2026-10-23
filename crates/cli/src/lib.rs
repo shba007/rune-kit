@@ -38,6 +38,18 @@ pub enum Commands {
         #[arg(long)]
         timeout: Option<u64>,
     },
+    /// Inspect installed plugins and run local discovery probes (not a Studio monitor)
+    Tui {
+        /// Print one inventory snapshot instead of entering the terminal UI
+        #[arg(long)]
+        once: bool,
+        /// Show only tools declared read-only in this dashboard's probes
+        #[arg(long)]
+        read_only: bool,
+        /// Parameters for this dashboard's probes, e.g. -p allowed_dir=/workspace
+        #[arg(short, long, value_parser = parse_key_val)]
+        param: Vec<(String, String)>,
+    },
     /// Install an artifact from registry, URL, or local path
     Install {
         target: String,
@@ -96,6 +108,7 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 }
 
 pub mod output;
+pub mod tui;
 
 use crate::output::{
     Column, Table, render_list_table, render_update_status_table, truncate_display,
@@ -108,10 +121,19 @@ use rune_kit_core::{
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     rune_kit_core::paths::managed_root()?;
+    if let Commands::Tui {
+        once,
+        read_only,
+        param,
+    } = &cli.command
+    {
+        return tui::run(*once || cli.json, cli.json, *read_only, param.clone());
+    }
     let pm = PackageManager::new();
     let sm = SkillManager::new();
 
     match cli.command {
+        Commands::Tui { .. } => unreachable!(),
         Commands::Run {
             plugin,
             all,
