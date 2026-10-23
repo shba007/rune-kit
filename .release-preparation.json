@@ -1,0 +1,9 @@
+{
+  "base_tag": "v0.4.0",
+  "version": "0.5.0",
+  "commits": [
+    "dc528977d0d0cbaf269899a718cf3a9ca07f6174",
+    "f0be42923ec3194733ee7c4fd7e1905fd9678967"
+  ],
+  "notes_sha256": "23aed59e5d7700266e44b381a7199c039500f071f8e1320637bb01a24e5bab0d"
+}
