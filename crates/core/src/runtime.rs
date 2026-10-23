@@ -360,9 +360,8 @@ impl WasmPluginInstance {
 
         let extism_manifest = extism_manifest.with_config(params.clone().into_iter());
 
-        let plugins_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rune-kit")
+        let plugins_dir = crate::paths::managed_root()
+            .expect("Cannot initialize Kit storage")
             .join("plugins");
 
         let host_ctx = HostContext {
@@ -816,11 +815,15 @@ impl NativeSidecar {
     }
 
     pub fn get_info(&mut self) -> Result<PluginInfo, RuntimeError> {
-        let resp = self.send_request("initialize", json!({}))?;
+        // Rune Tools exposes info on its private ABI. Retain the legacy probe
+        // for older standalone plugins; neither operation is public MCP discovery.
+        let mut resp = self.send_request("info", json!({}))?;
+        if resp.get("error").is_some() {
+            resp = self.send_request("initialize", json!({}))?;
+        }
         if let Some(err) = resp.get("error") {
             return Err(RuntimeError::Execution(format!(
-                "Native process initialize error: {}",
-                err
+                "Native process info error: {err}"
             )));
         }
 

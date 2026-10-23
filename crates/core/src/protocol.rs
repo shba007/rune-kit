@@ -48,10 +48,24 @@ pub fn parse_resource_uri(uri: &str) -> Option<(&str, &str)> {
 fn normalize_id(id: Option<&Value>) -> String {
     match id {
         Some(Value::Number(n)) => n.to_string(),
-        Some(Value::String(s)) => s.clone(),
+        Some(Value::String(s)) => format!("string:{s}"),
         Some(val) => val.to_string(),
         None => "null".to_string(),
     }
+}
+
+fn tool_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
+    let mut schema = schema.clone();
+    if !schema.is_object() || schema["type"] != "object" {
+        return Err("Tool inputSchema must describe an object".to_owned());
+    }
+    if schema.get("$schema").is_none() {
+        schema["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+    }
+    jsonschema::options()
+        .offline()
+        .build(&schema)
+        .map_err(|error| error.to_string())
 }
 
 impl Default for McpRouter {
@@ -108,7 +122,145 @@ impl McpRouter {
         }
     }
 
+    /// Public MCP stdio boundary. Plugin calls retain their private ABI.
     pub fn handle_jsonrpc(&mut self, request_str: &str) -> Option<Value> {
+        let req: Value = match serde_json::from_str(request_str) {
+            Ok(value) => value,
+            Err(_) => {
+                return Some(
+                    json!({"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}),
+                );
+            }
+        };
+        let id = req.get("id");
+        let error = |code: i64, message: &str| {
+            let mut value = json!({"jsonrpc":"2.0","error":{"code":code,"message":message}});
+            if let Some(id) = id.filter(|id| id.is_string() || id.is_number()) {
+                value["id"] = id.clone();
+            }
+            Some(value)
+        };
+        if !req.is_object()
+            || req["jsonrpc"] != "2.0"
+            || !req["method"].is_string()
+            || id.is_some_and(|v| !v.is_string() && !v.is_number())
+            || req.get("params").is_some_and(|v| !v.is_object())
+        {
+            return error(-32600, "Invalid request");
+        }
+        if id.is_none() {
+            if req["method"] == "notifications/cancelled" || req["method"] == "$/cancelRequest" {
+                return self.dispatch(request_str);
+            }
+            return None;
+        }
+        let meta = &req["params"]["_meta"];
+        let version = meta["io.modelcontextprotocol/protocolVersion"].as_str();
+        if version.is_none()
+            || !meta["io.modelcontextprotocol/clientCapabilities"].is_object()
+            || meta
+                .get("io.modelcontextprotocol/clientInfo")
+                .is_some_and(|info| !info["name"].is_string() || !info["version"].is_string())
+            || meta
+                .get("progressToken")
+                .is_some_and(|v| !v.is_string() && !v.is_number())
+        {
+            return error(-32602, "Invalid or missing request metadata");
+        }
+        let capabilities = &meta["io.modelcontextprotocol/clientCapabilities"];
+        for key in [
+            "roots",
+            "sampling",
+            "elicitation",
+            "experimental",
+            "extensions",
+        ] {
+            if capabilities.get(key).is_some_and(|v| !v.is_object()) {
+                return error(-32602, "Invalid client capability");
+            }
+        }
+        for (key, children) in [
+            ("sampling", &["context", "tools"][..]),
+            ("elicitation", &["form", "url"][..]),
+        ] {
+            for child in children {
+                if capabilities[key].get(child).is_some_and(|v| !v.is_object()) {
+                    return error(-32602, "Invalid client capability");
+                }
+            }
+        }
+        if meta
+            .get("io.modelcontextprotocol/logLevel")
+            .is_some_and(|level| {
+                ![
+                    "debug",
+                    "info",
+                    "notice",
+                    "warning",
+                    "error",
+                    "critical",
+                    "alert",
+                    "emergency",
+                ]
+                .iter()
+                .any(|v| level.as_str() == Some(v))
+            })
+        {
+            return error(-32602, "Invalid logging level");
+        }
+        if version != Some("2026-07-28") {
+            let mut response = error(-32022, "Unsupported protocol version").unwrap();
+            response["error"]["data"] = json!({"supported":["2026-07-28"],"requested":version});
+            return Some(response);
+        }
+        let params = &req["params"];
+        match req["method"].as_str().unwrap() {
+            "tools/call" | "prompts/get"
+                if !params["name"].is_string()
+                    || params.get("arguments").is_some_and(|v| !v.is_object()) =>
+            {
+                return error(-32602, "Invalid call parameters");
+            }
+            "resources/read" if !params["uri"].is_string() => {
+                return error(-32602, "Missing resource URI");
+            }
+            "tools/list" | "resources/list" | "resources/templates/list" | "prompts/list"
+                if params.get("cursor").is_some() =>
+            {
+                return error(-32602, "Invalid cursor: this gateway returns a single page");
+            }
+            _ => {}
+        }
+        let response = self.dispatch(request_str);
+        if self.cancelled_ids.lock().unwrap().remove(&normalize_id(id)) {
+            return None;
+        }
+        response.map(|mut response| {
+            if let Some(result) = response.get_mut("result") {
+                result["resultType"] = json!("complete");
+                if matches!(
+                    req["method"].as_str(),
+                    Some(
+                        "server/discover"
+                            | "tools/list"
+                            | "resources/list"
+                            | "resources/read"
+                            | "resources/templates/list"
+                            | "prompts/list"
+                            | "prompts/get"
+                    )
+                ) {
+                    result["ttlMs"] = json!(0);
+                    result["cacheScope"] = json!("private");
+                }
+                result["_meta"] = json!({"io.modelcontextprotocol/serverInfo":{
+                    "name":"rune-kit","version":env!("CARGO_PKG_VERSION")}});
+            }
+            response
+        })
+    }
+
+    fn dispatch(&mut self, request_str: &str) -> Option<Value> {
         let req: Value = match serde_json::from_str(request_str) {
             Ok(val) => val,
             Err(_) => {
@@ -119,32 +271,6 @@ impl McpRouter {
                 }));
             }
         };
-
-        // MCP 2025-03-26 permits JSON-RPC batches on stdio.
-        if let Some(batch) = req.as_array() {
-            if batch.is_empty() {
-                return Some(json!({"jsonrpc":"2.0", "id":null,
-                    "error":{"code":-32600,"message":"Invalid empty batch"}}));
-            }
-            let mut responses = Vec::new();
-            for item in batch {
-                if !item.is_object()
-                    || item.get("method").and_then(Value::as_str) == Some("initialize")
-                {
-                    responses.push(json!({"jsonrpc":"2.0", "id":item.get("id"),
-                        "error":{"code":-32600,"message":"Invalid batch request"}}));
-                } else if let Some(response) = self.handle_jsonrpc(&item.to_string())
-                    && item.get("id").is_some()
-                {
-                    responses.push(response);
-                }
-            }
-            return if responses.is_empty() {
-                None
-            } else {
-                Some(json!(responses))
-            };
-        }
 
         let id = req.get("id");
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
@@ -166,18 +292,11 @@ impl McpRouter {
         }
 
         match method {
-            "initialize" => Some(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {
-                        "tools": { "listChanged": false },
-                        "resources": {},
-                        "prompts": {}
-                    },
-                    "serverInfo": { "name": "rune-kit", "version": env!("CARGO_PKG_VERSION") }
-                }
+            "server/discover" => Some(json!({
+                "jsonrpc":"2.0", "id":id,
+                "result": {"supportedVersions":["2026-07-28"],
+                    "capabilities":{"tools":{},"resources":{},"prompts":{}},
+                    "ttlMs":0,"cacheScope":"private"}
             })),
             "ping" => Some(json!({
                 "jsonrpc": "2.0",
@@ -214,6 +333,13 @@ impl McpRouter {
                                     }
                                 }
 
+                                if let Err(error) = tool_validator(&tool.input_schema) {
+                                    discovery_errors.push(format!(
+                                        "plugin '{ns}', tool '{}': {error}",
+                                        tool.name
+                                    ));
+                                    continue;
+                                }
                                 let mut tool_obj = json!({
                                     "name": full_name,
                                     "description": tool.description,
@@ -265,7 +391,11 @@ impl McpRouter {
                          in read-only mode."
                     );
                 }
+                all_tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
                 Some(json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": all_tools } }))
+            }
+            "resources/templates/list" => {
+                Some(json!({"jsonrpc":"2.0","id":id,"result":{"resourceTemplates":[]}}))
             }
             "resources/list" => {
                 let mut all_resources = Vec::new();
@@ -282,9 +412,8 @@ impl McpRouter {
                             }
                         }
                         Err(err) => {
-                            eprintln!(
-                                "[Rune Error] Failed to list resources from '{}': {}",
-                                ns, err
+                            return Some(
+                                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":format!("Resource discovery failed: plugin '{ns}': {err}")}}),
                             );
                         }
                     }
@@ -315,7 +444,9 @@ impl McpRouter {
                             }
                         }
                         Err(err) => {
-                            eprintln!("[Rune Error] Failed to list prompts from '{}': {}", ns, err);
+                            return Some(
+                                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":format!("Prompt discovery failed: plugin '{ns}': {err}")}}),
+                            );
                         }
                     }
                 }
@@ -394,6 +525,32 @@ impl McpRouter {
                 }
 
                 if let Some(instance) = self.instances.get_mut(ns) {
+                    let tools = match instance.list_tools() {
+                        Ok(tools) => tools,
+                        Err(error) => {
+                            return Some(
+                                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":format!("Tool discovery failed: plugin '{ns}': {error}")}}),
+                            );
+                        }
+                    };
+                    let Some(tool) = tools.iter().find(|t| t.name == tool_name) else {
+                        return Some(
+                            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":format!("Unknown tool: {full_name}")}}),
+                        );
+                    };
+                    let validator = match tool_validator(&tool.input_schema) {
+                        Ok(validator) => validator,
+                        Err(error) => {
+                            return Some(
+                                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":format!("Invalid tool schema: {error}")}}),
+                            );
+                        }
+                    };
+                    if let Err(error) = validator.validate(&arguments) {
+                        return Some(
+                            json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":format!("Invalid tool arguments: {error}")}]}}),
+                        );
+                    }
                     let cancel_flag = Arc::new(AtomicBool::new(false));
                     let wasm_handle = if let PluginInstance::Wasm(w) = instance {
                         Some(w.get_cancel_handle())
@@ -401,6 +558,10 @@ impl McpRouter {
                         None
                     };
 
+                    let cancelled = self.cancelled_ids.lock().unwrap();
+                    if cancelled.contains(&req_id_str) {
+                        return None;
+                    }
                     self.active_cancels.lock().unwrap().insert(
                         req_id_str.clone(),
                         CancelState {
@@ -409,6 +570,7 @@ impl McpRouter {
                         },
                     );
 
+                    drop(cancelled);
                     let timeout = self.config.tool_timeout_secs.map(Duration::from_secs);
                     let call_res =
                         instance.call_tool_with_cancel(tool_name, arguments, cancel_flag, timeout);
@@ -570,6 +732,8 @@ impl McpRouter {
         let active_cancels = self.active_cancels.clone();
         let cancelled_ids = self.cancelled_ids.clone();
 
+        let outstanding = Arc::new(Mutex::new(HashSet::new()));
+        let input_outstanding = outstanding.clone();
         let stdin_thread = std::thread::spawn(move || {
             let stdin = io::stdin();
             for line in stdin.lock().lines() {
@@ -578,14 +742,22 @@ impl McpRouter {
                         // Intercept cancellation notification immediately on input thread
                         if let Ok(val) = serde_json::from_str::<Value>(&l) {
                             let method = val.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                            if method == "notifications/cancelled" || method == "$/cancelRequest" {
+                            if val["jsonrpc"] == "2.0"
+                                && val.get("id").is_none()
+                                && (method == "notifications/cancelled"
+                                    || method == "$/cancelRequest")
+                            {
                                 let req_id = val
                                     .get("params")
                                     .and_then(|p| p.get("requestId").or_else(|| p.get("id")))
                                     .map(|v| normalize_id(Some(v)))
                                     .unwrap_or_default();
                                 if !req_id.is_empty() {
-                                    cancelled_ids.lock().unwrap().insert(req_id.clone());
+                                    let mut cancelled = cancelled_ids.lock().unwrap();
+                                    if !input_outstanding.lock().unwrap().contains(&req_id) {
+                                        continue;
+                                    }
+                                    cancelled.insert(req_id.clone());
                                     if let Some(state) = active_cancels.lock().unwrap().get(&req_id)
                                     {
                                         state.flag.store(true, Ordering::Relaxed);
@@ -594,9 +766,20 @@ impl McpRouter {
                                         }
                                     }
                                 }
+                                // Already applied on this thread; never enqueue cancellation twice.
+                                continue;
                             }
                         }
 
+                        if let Ok(value) = serde_json::from_str::<Value>(&l)
+                            && value.get("id").is_some()
+                            && value["method"].is_string()
+                        {
+                            input_outstanding
+                                .lock()
+                                .unwrap()
+                                .insert(normalize_id(value.get("id")));
+                        }
                         if tx.blocking_send(l).is_err() {
                             break;
                         }
@@ -614,9 +797,22 @@ impl McpRouter {
                 continue;
             }
 
-            if let Some(res) = self.handle_jsonrpc(trimmed) {
+            let response = self.handle_jsonrpc(trimmed);
+            let req_id = serde_json::from_str::<Value>(trimmed)
+                .ok()
+                .and_then(|v| v.get("id").cloned())
+                .map(|id| normalize_id(Some(&id)));
+            // Synchronize writing with the input thread so cancellation cannot race a late write.
+            let mut cancelled = self.cancelled_ids.lock().unwrap();
+            if let Some(res) = response
+                && !cancelled.contains(&normalize_id(res.get("id")))
+            {
                 writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
                 stdout.flush()?;
+            }
+            if let Some(id) = req_id {
+                outstanding.lock().unwrap().remove(&id);
+                cancelled.remove(&id);
             }
         }
 
@@ -629,5 +825,25 @@ impl McpRouter {
             .enable_all()
             .build()?;
         rt.block_on(self.run_stdio())
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    #[test]
+    fn default_draft_and_local_references_validate_without_network() {
+        let validator = tool_validator(&json!({"type":"object","$defs":{"path":{"type":"string"}},"properties":{"path":{"$ref":"#/$defs/path"}},"required":["path"],"unevaluatedProperties":false})).unwrap();
+        assert!(validator.is_valid(&json!({"path":"ok"})));
+        assert!(!validator.is_valid(&json!({"path":1})));
+        assert!(!validator.is_valid(&json!({"path":"ok","extra":1})));
+        assert!(
+            tool_validator(&json!({"type":"object","$ref":"https://example.invalid/schema"}))
+                .is_err()
+        );
+        assert!(
+            tool_validator(&json!({"type":"object","$schema":"https://example.invalid/dialect"}))
+                .is_err()
+        );
     }
 }

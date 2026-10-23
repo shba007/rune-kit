@@ -5,12 +5,11 @@ permissions:
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
 
 jobs:
   release:
-    if: contains(github.event.head_commit.message, 'ci(release):')
     runs-on: ubuntu-latest
     steps:
       - name: 📥 Checkout Repo
@@ -25,13 +24,12 @@ jobs:
         id: version
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
+          test "$GITHUB_REF_NAME" = "v$VERSION" || { echo "Tag does not match workspace version" >&2; exit 1; }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: 🏷️ Tag Release
-        run: |
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+      - name: Validate release notes
+        run: python3 scripts/release_notes.py "${{ steps.version.outputs.version }}" --output release-notes.md
 
       # Uses a PAT rather than the default GITHUB_TOKEN: a release created
       # with the default token does not trigger other workflows' `on: release:
@@ -42,5 +40,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
+            --verify-tag \
             --title "${{ steps.version.outputs.tag }}" \
-            --generate-notes
+            --notes-file release-notes.md

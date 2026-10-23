@@ -32,7 +32,9 @@ class Gateway:
 
     def request(self, method, params=None):
         self.next_id += 1
-        self.send({'jsonrpc': '2.0', 'id': self.next_id, 'method': method, 'params': params or {}})
+        params = dict(params or {})
+        params['_meta'] = {'io.modelcontextprotocol/protocolVersion':'2026-07-28', 'io.modelcontextprotocol/clientCapabilities':{}}
+        self.send({'jsonrpc': '2.0', 'id': self.next_id, 'method': method, 'params': params})
         response = json.loads(self.output.get(timeout=40))
         assert response.get('id') == self.next_id, response
         return response
@@ -42,11 +44,9 @@ class Gateway:
         self.process.stdin.flush()
 
     def initialize(self):
-        reply = self.request('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {},
-                    'clientInfo': {'name': 'rune-kit-cycle1', 'version': '1'}})
-        assert reply['result']['protocolVersion'] == '2025-03-26', reply
-        self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
-        return reply['result']['serverInfo']
+        reply = self.request('server/discover')
+        assert reply['result']['supportedVersions'] == ['2026-07-28'], reply
+        return reply['result']['_meta']['io.modelcontextprotocol/serverInfo']
 
     def close(self):
         self.process.stdin.close()

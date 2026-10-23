@@ -1,0 +1,336 @@
+{
+  "minimumKitVersion": "0.5.0",
+  "protocolVersion": "2026-07-28",
+  "note": "Recorded local wire examples. Plugin namespaces are normalized to time/filesystem/fixture; timestamps are illustrative. Cancellation has no response.",
+  "discovery": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "server/discover",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "rune-kit",
+            "version": "0.5.0"
+          }
+        },
+        "cacheScope": "private",
+        "capabilities": {
+          "prompts": {},
+          "resources": {},
+          "tools": {}
+        },
+        "resultType": "complete",
+        "supportedVersions": [
+          "2026-07-28"
+        ],
+        "ttlMs": 0
+      }
+    }
+  },
+  "toolsList": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "tools/list",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "rune-kit",
+            "version": "0.5.0"
+          }
+        },
+        "cacheScope": "private",
+        "resultType": "complete",
+        "tools": [
+          {
+            "annotations": {
+              "destructive": false,
+              "destructiveHint": false,
+              "openWorld": false,
+              "openWorldHint": false,
+              "readOnly": true,
+              "readOnlyHint": true
+            },
+            "description": "Converts a date and time string from a source IANA timezone to a destination timezone.",
+            "inputSchema": {
+              "properties": {
+                "sourceTimezone": {
+                  "description": "Source IANA timezone name (e.g. 'UTC', 'America/Los_Angeles')",
+                  "type": "string"
+                },
+                "targetTimezone": {
+                  "description": "Destination IANA timezone name (e.g. 'Asia/Tokyo', 'Europe/London')",
+                  "type": "string"
+                },
+                "time": {
+                  "description": "Datetime string to convert (e.g. '2026-09-02T14:30:00' or '2026-09-02 14:30:00')",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sourceTimezone",
+                "targetTimezone",
+                "time"
+              ],
+              "type": "object",
+              "x-rune-rules": {
+                "effects": [
+                  "read"
+                ],
+                "read_only": true,
+                "risk": "low"
+              }
+            },
+            "name": "time__convert_time"
+          },
+          {
+            "annotations": {
+              "destructive": false,
+              "destructiveHint": false,
+              "openWorld": false,
+              "openWorldHint": false,
+              "readOnly": true,
+              "readOnlyHint": true
+            },
+            "description": "Retrieves the current date and time in UTC and a target IANA timezone with offset details.",
+            "inputSchema": {
+              "properties": {
+                "timezone": {
+                  "description": "Target IANA timezone name (e.g. 'America/New_York', 'Asia/Kolkata', 'UTC'). Defaults to UTC.",
+                  "type": "string"
+                }
+              },
+              "type": "object",
+              "x-rune-rules": {
+                "effects": [
+                  "read"
+                ],
+                "read_only": true,
+                "risk": "low"
+              }
+            },
+            "name": "time__get_current_time"
+          }
+        ],
+        "ttlMs": 0
+      }
+    }
+  },
+  "successfulCall": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "tools/call",
+      "params": {
+        "name": "time__get_current_time",
+        "arguments": {
+          "timezone": "UTC"
+        },
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "rune-kit",
+            "version": "0.5.0"
+          }
+        },
+        "content": [
+          {
+            "text": "{\"result\":{\"datetime\":\"2026-10-23T06:13:20.444459600+00:00\",\"timestampEpochSeconds\":1792736000,\"timezone\":\"UTC\",\"utcDatetime\":\"2026-10-23T06:13:20.444459600+00:00\",\"utcOffset\":\"+00:00\"},\"status\":\"success\"}",
+            "type": "text"
+          }
+        ],
+        "isError": false,
+        "resultType": "complete"
+      }
+    }
+  },
+  "missingMetadata": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": "missing-meta",
+      "method": "tools/list"
+    },
+    "response": {
+      "error": {
+        "code": -32602,
+        "message": "Invalid or missing request metadata"
+      },
+      "id": "missing-meta",
+      "jsonrpc": "2.0"
+    }
+  },
+  "rejectedVersion": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": "wrong-version",
+      "method": "tools/list",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2025-03-26",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32022,
+        "data": {
+          "requested": "2025-03-26",
+          "supported": [
+            "2026-07-28"
+          ]
+        },
+        "message": "Unsupported protocol version"
+      },
+      "id": "wrong-version",
+      "jsonrpc": "2.0"
+    }
+  },
+  "forbiddenTool": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "method": "tools/call",
+      "params": {
+        "name": "filesystem__write_file",
+        "arguments": {
+          "path": "forbidden.txt",
+          "content": "bad"
+        },
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32600,
+        "message": "Permission denied: gateway is running in read-only mode and tool 'filesystem__write_file' is not declared read-only"
+      },
+      "id": 6,
+      "jsonrpc": "2.0"
+    }
+  },
+  "cancellation": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": "cancel-me",
+      "method": "tools/call",
+      "params": {
+        "name": "fixture__read",
+        "arguments": {},
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "notifications/cancelled",
+      "params": {
+        "requestId": "cancel-me"
+      }
+    },
+    "response": null,
+    "nextRequest": {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "ping",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "nextResponse": {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "io.modelcontextprotocol/serverInfo": {
+            "name": "rune-kit",
+            "version": "0.5.0"
+          }
+        },
+        "resultType": "complete"
+      }
+    }
+  },
+  "failedPluginDiscovery": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/list",
+      "params": {
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32000,
+        "message": "Tool discovery failed: plugin 'fixture': JSON serialization error: conflicting annotation values for readOnlyHint and readOnly"
+      },
+      "id": 1,
+      "jsonrpc": "2.0"
+    }
+  },
+  "timeout": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "tools/call",
+      "params": {
+        "name": "fixture__read",
+        "arguments": {},
+        "_meta": {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientCapabilities": {}
+        }
+      }
+    },
+    "response": {
+      "error": {
+        "code": -32000,
+        "message": "Tool execution timed out after 1 seconds"
+      },
+      "id": 2,
+      "jsonrpc": "2.0"
+    }
+  }
+}

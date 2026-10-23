@@ -110,9 +110,8 @@ impl Default for BinaryProvisioner {
 
 impl BinaryProvisioner {
     pub fn new() -> Self {
-        let base_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rune-kit")
+        let base_dir = crate::paths::managed_root()
+            .expect("Cannot initialize Kit storage")
             .join("_bin");
         let _ = std::fs::create_dir_all(&base_dir);
         Self { base_dir }

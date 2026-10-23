@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-10-23
+- Use MCP 2026-07-28 discovery and per-request version/capability metadata on the public stdio gateway. Clients must replace initialization with server/discover and include metadata on every request. Cancelled requests produce no late response; tool schemas, annotation aliases, read-only restrictions and explicit filesystem roots remain supported.
+- Install rune-kit under ~/rune and keep managed plugins, skills and provisioned binaries under ~/rune/tools. Copy legacy managed storage without overwriting conflicts, retain originals for recovery, and preserve custom installation paths and Infer files.
+- Read native plugin information through the existing private info operation, retaining the legacy probe for older plugins.
+- Publish release notes from the matching CHANGELOG section and keep CI from creating source commits or release branches.
+
 ## 0.4.0 - 2026-10-23
 - Missing WASI filesystem roots no longer preopen the working directory; explicit roots must be existing absolute directories. Legacy annotation output remains enabled.
 - Rename the CLI to `rune-kit` and release archives to `rune-kit-<tag>-<target>`. Update MCP client commands from `rune` to `rune-kit`; existing rune-kit data folders are preserved.

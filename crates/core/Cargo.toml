@@ -18,5 +18,7 @@ flate2.workspace = true
 tar.workspace = true
 zip.workspace = true
 
+jsonschema = { version = "0.60", default-features = false }
+
 [dev-dependencies]
 wat = "1"

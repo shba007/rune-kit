@@ -14,7 +14,9 @@
     }
     $version = Setting 'RUNE_KIT_VERSION' 'latest'
     $base = Setting 'RUNE_KIT_BASE_URL' ''
-    $installDir = [IO.Path]::GetFullPath((Setting 'RUNE_KIT_INSTALL_DIR' (Join-Path $env:LOCALAPPDATA 'Programs\rune-kit')))
+    $userHome = [Environment]::GetFolderPath('UserProfile')
+    if ([string]::IsNullOrWhiteSpace($userHome)) { throw 'Cannot resolve user home.' }
+    $installDir = [IO.Path]::GetFullPath((Setting 'RUNE_KIT_INSTALL_DIR' (Join-Path $userHome 'rune')))
     $release = $null
     if ($base) {
         if ($version -eq 'latest') { throw 'Set RUNE_KIT_VERSION when using a mirror.' }

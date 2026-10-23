@@ -107,6 +107,7 @@ use rune_kit_core::{
 
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    rune_kit_core::paths::managed_root()?;
     let pm = PackageManager::new();
     let sm = SkillManager::new();
 

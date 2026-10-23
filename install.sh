@@ -9,7 +9,9 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 repo=shba007/rune-kit
 version=${RUNE_KIT_VERSION:-latest}
-install_dir=${RUNE_KIT_INSTALL_DIR:-"$HOME/.local/bin"}
+: "${HOME:?Cannot resolve user home}"
+case "$HOME" in /*) ;; *) die "User home must be absolute." ;; esac
+install_dir=${RUNE_KIT_INSTALL_DIR:-"$HOME/rune"}
 base=${RUNE_KIT_BASE_URL:-}
 
 have curl || die 'curl is required.'
@@ -79,10 +81,19 @@ stage=$(mktemp "$install_dir/.rune-kit-install.XXXXXXXX") || die 'Cannot stage e
 cp "$tmp/rune-kit" "$stage" && chmod 755 "$stage" && mv -f "$stage" "$install_dir/rune-kit" || die 'Cannot replace executable.'
 stage=
 say "Installed: $install_dir/rune-kit ($reported)"
-case ":$PATH:" in *":$install_dir:"*) ;;
-    *) say "$install_dir is not on PATH. Add it to your shell profile, then open a new terminal:"
-       # Single-quote paths safely, including apostrophes, before printing shell code.
-       quoted=$(printf '%s' "$install_dir" | sed "s/'/'\\\\''/g")
-       say "  export PATH='$quoted':\$PATH" ;;
-esac
+if [ "${RUNE_KIT_NO_MODIFY_PATH:-0}" != 1 ]; then
+    quoted=$(printf '%s' "$install_dir" | sed "s/'/'\\\\''/g")
+    path_line="case \":\$PATH:\" in *:'$quoted':*) ;; *) export PATH='$quoted':\$PATH ;; esac"
+    profile="$HOME/.profile"
+    case ":$PATH:" in *":$install_dir:"*) ;; *)
+        if ! grep -Fqx "$path_line" "$profile" 2>/dev/null; then
+            printf '\n%s\n' "$path_line" >> "$profile" || die "Cannot update $profile. Use RUNE_KIT_NO_MODIFY_PATH=1."
+        fi
+        say "Added $install_dir to $profile; open a new login shell." ;;
+    esac
+else
+    say "PATH unchanged. Add $install_dir to your shell profile if needed."
+    quoted=$(printf '%s' "$install_dir" | sed "s/'/'\\\\''/g")
+    say "  export PATH='$quoted':\$PATH"
+fi
 say 'Next: rune-kit --help'

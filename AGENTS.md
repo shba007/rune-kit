@@ -265,3 +265,7 @@ Whether operating as a WASM companion or as a standalone native server:
 
 *Generated from confirmed architectural contracts and repository implementations.*  
 *Last updated: 2026-09-21.*
+
+## Owner-controlled delivery
+
+Implement and test locally; leave changes uncommitted and unpushed. Do not stage, commit, push, merge, create branches or tags, publish releases, or dispatch publishing workflows. The owner performs those actions. Prepare the version and user-facing CHANGELOG section before the owner commits. Release notes must extract that exact version section; never regenerate from Git history.

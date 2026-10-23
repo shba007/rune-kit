@@ -120,6 +120,29 @@ class Installers(unittest.TestCase):
         self.assertFalse(self.install.exists())
 
     @unittest.skipUnless(BASH, 'POSIX shell or Git Bash required')
+    def test_posix_default_shared_root_and_path_once(self):
+        self.package(self.tar, f'rune-kit-{TAG}-x86_64-unknown-linux-gnu.tar.gz')
+        home = self.root / "home with spaces"
+        shared = home / 'rune'
+        shared.mkdir(parents=True)
+        (shared/'rune-infer').write_bytes(b'infer')
+        (shared/'infer').mkdir()
+        (shared/'infer/config').write_bytes(b'configuration')
+        self.env.pop('RUNE_KIT_INSTALL_DIR')
+        self.env.update(HOME=home.as_posix(), RUNE_KIT_NO_MODIFY_PATH='0')
+        self.run_installer()
+        self.run_installer()
+        self.assertTrue((shared/'rune-kit').is_file())
+        self.assertEqual((shared/'rune-infer').read_bytes(), b'infer')
+        self.assertEqual((shared/'infer/config').read_bytes(), b'configuration')
+        self.assertEqual((home/'.profile').read_text().count('export PATH='), 1)
+        profile = (home/'.profile').as_posix()
+        check = subprocess.run([BASH, '-c', 'source "$1"; source "$1"; printf "%s" "$PATH"', 'check', profile], env=self.env, text=True, capture_output=True)
+        self.assertEqual(check.returncode, 0, check.stderr)
+        expected = subprocess.check_output([BASH, "-c", 'printf "%s" "$HOME/rune"'], env=self.env, text=True)
+        self.assertEqual(check.stdout.count(expected), 1)
+
+    @unittest.skipUnless(BASH, 'POSIX shell or Git Bash required')
     def test_posix_install_reinstall_and_quoted_path_hint(self):
         self.package(self.tar, f'rune-kit-{TAG}-x86_64-unknown-linux-gnu.tar.gz')
         result = self.run_installer()

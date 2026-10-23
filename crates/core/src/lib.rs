@@ -17,3 +17,5 @@ pub use provision::{BinaryProvisioner, ProvisionError};
 pub use runtime::{
     NativeSidecar, PluginInstance, RuntimeError, WasmPluginInstance, resolve_host_env_params,
 };
+
+pub mod paths;

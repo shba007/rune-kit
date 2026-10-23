@@ -99,7 +99,7 @@ fn dual_annotations() -> Value {
 
 fn list(router: &mut McpRouter) -> Value {
     router
-        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":42,"method":"tools/list"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":42,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .unwrap()
 }
 
@@ -120,7 +120,7 @@ fn check_discovery(mut router: McpRouter, annotations: &Value) {
         assert!(normal.get("result").is_none());
         router.set_read_only(true);
         assert_eq!(list(&mut router)["error"]["code"], -32000);
-        let refused = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"fixture__read"}}"#).unwrap();
+        let refused = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"fixture__read","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#).unwrap();
         assert_eq!(refused["error"]["code"], -32600);
         return;
     }
@@ -133,7 +133,7 @@ fn check_discovery(mut router: McpRouter, annotations: &Value) {
     let tools = restricted["result"]["tools"].as_array().unwrap();
     if annotations.is_null() {
         assert!(tools.is_empty());
-        let refused = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"fixture__read"}}"#).unwrap();
+        let refused = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"fixture__read","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#).unwrap();
         assert_eq!(refused["error"]["code"], -32600);
     } else {
         assert_eq!(tools.len(), 1);

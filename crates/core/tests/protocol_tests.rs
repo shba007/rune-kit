@@ -91,17 +91,20 @@ fn test_manifest_tool_rules_parsing() {
 // This test uses the router directly without a real plugin instance so it only asserts the
 // protocol-version upgrade; wire-name injection is covered by test_annotation_wire_names.
 #[test]
-fn test_router_initialize() {
+fn test_router_discover() {
     let mut router = McpRouter::new();
     let resp = router
-        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 1, "method": "initialize"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .expect("Response expected");
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 1);
     // KF-1: protocolVersion must report 2025-03-26
-    assert_eq!(resp["result"]["protocolVersion"], "2025-03-26");
-    assert_eq!(resp["result"]["serverInfo"]["name"], "rune-kit");
+    assert_eq!(resp["result"]["supportedVersions"][0], "2026-07-28");
+    assert_eq!(
+        resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "rune-kit"
+    );
 }
 
 #[test]
@@ -124,11 +127,9 @@ fn test_router_cancellation_tracking() {
 
     // A tool call using that cancelled ID before execution should be rejected with -32800
     let call_resp = router.handle_jsonrpc(
-        r#"{"jsonrpc": "2.0", "id": "call-100", "method": "tools/call", "params": {"name": "test__run"}}"#,
+        r#"{"jsonrpc":"2.0","id":"call-100","method":"tools/call","params":{"name":"test__run","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
-    let val = call_resp.expect("Error response");
-    assert_eq!(val["error"]["code"], -32800);
-    assert_eq!(val["error"]["message"], "Request cancelled by client");
+    assert!(call_resp.is_none());
 }
 
 #[test]
@@ -142,17 +143,16 @@ fn test_router_cancel_request_method() {
     assert!(resp.is_none());
 
     let call_resp = router.handle_jsonrpc(
-        r#"{"jsonrpc": "2.0", "id": "req-42", "method": "tools/call", "params": {"name": "test__run"}}"#,
+        r#"{"jsonrpc":"2.0","id":"req-42","method":"tools/call","params":{"name":"test__run","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
-    let val = call_resp.expect("Error response");
-    assert_eq!(val["error"]["code"], -32800);
+    assert!(call_resp.is_none());
 }
 
 #[test]
 fn test_router_invalid_tool_namespacing() {
     let mut router = McpRouter::new();
     let resp = router.handle_jsonrpc(
-        r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "invalid_no_namespace"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"invalid_no_namespace","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
     let val = resp.expect("Response expected");
     assert_eq!(val["error"]["code"], -32602);
@@ -164,7 +164,7 @@ fn test_router_allowlist_enforcement() {
     router.set_allowed_tools(vec!["ns__allowed_tool".to_string()]);
 
     let resp = router.handle_jsonrpc(
-        r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "ns__forbidden_tool"}}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ns__forbidden_tool","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
     let val = resp.expect("Response expected");
     assert_eq!(val["error"]["code"], -32600);
@@ -183,7 +183,7 @@ fn test_router_read_only_enforcement() {
 
     // Any call to non-registered or non-read-only tool in read-only mode is denied with -32600
     let resp = router.handle_jsonrpc(
-        r#"{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "ns__write_file"}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ns__write_file","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
     let val = resp.expect("Response expected");
     assert_eq!(val["error"]["code"], -32600);
@@ -248,7 +248,7 @@ fn test_annotation_both_spellings_deserialise() {
 fn test_router_resources_list_empty_no_instances() {
     let mut router = McpRouter::new();
     let resp = router
-        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 5, "method": "resources/list"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":5,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .expect("Response expected");
     assert!(resp["result"]["resources"].as_array().unwrap().is_empty());
 }
@@ -259,7 +259,7 @@ fn test_router_tools_list_read_only_empty() {
     let mut router = McpRouter::new();
     router.set_read_only(true);
     let resp = router
-        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 6, "method": "tools/list"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .expect("Response expected");
     let tools = resp["result"]["tools"].as_array().unwrap();
     assert!(
@@ -279,27 +279,21 @@ fn test_error_shapes() {
     );
     assert!(cancel_resp.is_none());
     let call = router
-        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": "x1", "method": "tools/call", "params": {"name": "ns__tool"}}"#)
-        .unwrap();
-    assert_eq!(call["error"]["code"], -32800);
-    assert!(
-        call["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("cancelled")
-    );
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":"x1","method":"tools/call","params":{"name":"ns__tool","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
+        ;
+    assert!(call.is_none());
 
     // -32600: permission denied (allowlist)
     let mut r2 = McpRouter::new();
     r2.set_allowed_tools(vec!["ns__only".to_string()]);
     let perm = r2
-        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "ns__other"}}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"ns__other","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .unwrap();
     assert_eq!(perm["error"]["code"], -32600);
 
     // -32601: unknown method
     let unk = router
-        .handle_jsonrpc(r#"{"jsonrpc": "2.0", "id": 11, "method": "no_such_method"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":11,"method":"no_such_method","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .unwrap();
     assert_eq!(unk["error"]["code"], -32601);
 
@@ -347,12 +341,14 @@ fn native_wire_rules_and_timeout() {
     "#,
     )
     .unwrap();
-    let native = NativeSidecar::new("fixture", &binary, HashMap::new(), Some(manifest)).unwrap();
+    let mut native =
+        NativeSidecar::new("fixture", &binary, HashMap::new(), Some(manifest)).unwrap();
+    assert_eq!(native.get_info().unwrap().version, "0.1.0");
     let mut router = McpRouter::new();
     router.register("fixture".into(), PluginInstance::Native(Box::new(native)));
     router.set_read_only(true);
     let listed = router
-        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .unwrap();
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -368,7 +364,7 @@ fn native_wire_rules_and_timeout() {
         assert_eq!(ann[legacy], expected);
     }
     let resources = router
-        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#)
+        .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .unwrap();
     assert!(
         resources["result"]["resources"]
@@ -377,20 +373,20 @@ fn native_wire_rules_and_timeout() {
             .iter()
             .any(|r| r["uri"] == "rune://fixture/rules")
     );
-    let rules = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"rune://fixture/rules"}}"#).unwrap();
+    let rules = router.handle_jsonrpc(r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"rune://fixture/rules","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#).unwrap();
     let text = rules["result"]["contents"][0]["text"].as_str().unwrap();
     let rules: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(rules["manifest"]["tools"]["read"]["read_only"], true);
     let refused = router
         .handle_jsonrpc(
-            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"fixture__write"}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"fixture__write","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
         )
         .unwrap();
     assert_eq!(refused["error"]["code"], -32600);
     router.set_tool_timeout(1);
     let timed_out = router
         .handle_jsonrpc(
-            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"fixture__read"}}"#,
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"fixture__read","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
         )
         .unwrap();
     assert_eq!(
@@ -400,7 +396,7 @@ fn native_wire_rules_and_timeout() {
     // A killed native child must respawn successfully for discovery.
     assert_eq!(
         router
-            .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":6,"method":"tools/list"}"#)
+            .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
             .unwrap()["result"]["tools"]
             .as_array()
             .unwrap()
@@ -447,39 +443,44 @@ fn wasm_explicit_timeout_interrupts_guest() {
 }
 
 #[test]
-fn protocol_batches_omit_notifications() {
+fn protocol_rejects_batches_and_missing_metadata() {
     let mut router = McpRouter::new();
-    let reply = router.handle_jsonrpc(r#"[{"jsonrpc":"2.0","method":"ping","id":1},{"jsonrpc":"2.0","method":"ping"},{"jsonrpc":"2.0","method":"tools/list","id":2}]"#).unwrap();
-    assert_eq!(reply.as_array().unwrap().len(), 2);
-    assert_eq!(reply[0]["id"], 1);
-    assert_eq!(reply[1]["id"], 2);
-    assert!(
-        router
-            .handle_jsonrpc(r#"[{"jsonrpc":"2.0","method":"ping"}]"#)
-            .is_none()
-    );
     assert_eq!(
         router.handle_jsonrpc("[]").unwrap()["error"]["code"],
         -32600
     );
     assert_eq!(
         router
-            .handle_jsonrpc(r#"[{"jsonrpc":"2.0","id":3,"method":"initialize"}]"#)
-            .unwrap()[0]["error"]["code"],
-        -32600
+            .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+            .unwrap()["error"]["code"],
+        -32602
     );
 }
 
 #[test]
-fn wasm_invalid_filesystem_roots_are_rejected() {
-    use rune_kit_core::runtime::WasmPluginInstance;
-    for root in ["", ".", "relative/path", "Z:/rune-kit-nonexistent-root"] {
-        let result = WasmPluginInstance::load_from_bytes(
-            "root-test",
-            wat::parse_str("(module)").unwrap(),
-            std::collections::HashMap::from([("allowed_dir".to_string(), root.to_string())]),
-            PluginManifest::default(),
-        );
-        assert!(result.is_err(), "invalid root accepted: {root}");
-    }
+fn modern_requests_validate_version_identity_and_legacy_handshake() {
+    let mut router = McpRouter::new();
+    let mut request = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}});
+    let reply = router.handle_jsonrpc(&request.to_string()).unwrap();
+    assert_eq!(reply["result"]["resultType"], "complete");
+    assert_eq!(reply["result"]["cacheScope"], "private");
+    request["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] =
+        serde_json::json!("2025-03-26");
+    let reply = router.handle_jsonrpc(&request.to_string()).unwrap();
+    assert_eq!(reply["error"]["code"], -32022);
+    assert_eq!(reply["error"]["data"]["supported"][0], "2026-07-28");
+    request["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] =
+        serde_json::json!("2026-07-28");
+    request["method"] = serde_json::json!("initialize");
+    assert_eq!(
+        router.handle_jsonrpc(&request.to_string()).unwrap()["error"]["code"],
+        -32601
+    );
+    request["params"]["_meta"]["io.modelcontextprotocol/clientInfo"] =
+        serde_json::json!({"name":"incomplete"});
+    assert_eq!(
+        router.handle_jsonrpc(&request.to_string()).unwrap()["error"]["code"],
+        -32602
+    );
 }

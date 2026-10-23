@@ -12,6 +12,8 @@ fn main() {
         let result = if line.contains("tools/list") {
             configured.as_deref().unwrap_or(
             r#"{"tools":[{"name":"read","description":"Read fixture","inputSchema":{"type":"object"}},{"name":"write","description":"Write fixture","inputSchema":{"type":"object"}}]}"#)
+        } else if line.contains("info") {
+            r#"{"name":"fixture","version":"0.1.0"}"#
         } else if line.contains("resources/list") {
             r#"{"resources":[]}"#
         } else {

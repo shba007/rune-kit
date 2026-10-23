@@ -53,9 +53,7 @@ impl Default for PackageManager {
 
 impl PackageManager {
     pub fn new() -> Self {
-        let base_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rune-kit");
+        let base_dir = crate::paths::managed_root().expect("Cannot initialize Kit storage");
 
         let _ = std::fs::create_dir_all(base_dir.join("plugins"));
         let lockfile_path = base_dir.join("installed.json");
@@ -673,9 +671,7 @@ impl Default for SkillManager {
 
 impl SkillManager {
     pub fn new() -> Self {
-        let base_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rune-kit");
+        let base_dir = crate::paths::managed_root().expect("Cannot initialize Kit storage");
 
         let _ = std::fs::create_dir_all(base_dir.join("skills"));
         let lockfile_path = base_dir.join("installed_skills.json");

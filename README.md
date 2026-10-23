@@ -7,14 +7,14 @@
 [![Rust CI](https://github.com/shba007/rune-kit/actions/workflows/integrate.yml/badge.svg)](https://github.com/shba007/rune-kit/actions/workflows/integrate.yml)
 [![Release](https://img.shields.io/github/v/release/shba007/rune-kit?include_prereleases&logo=github)](https://github.com/shba007/rune-kit/releases)
 [![Rust Edition](https://img.shields.io/badge/rust-edition%202024-orange?logo=rust)](https://www.rust-lang.org)
-[![MCP Protocol](https://img.shields.io/badge/MCP%20protocol-2025--03--26-blueviolet)](https://modelcontextprotocol.io)
+[![MCP Protocol](https://img.shields.io/badge/MCP%20protocol-2026--07--28-blueviolet)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
 
 ---
 
-Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`protocolVersion: 2025-03-26`). It ships as a single CLI binary (`rune-kit`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
+Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`per-request protocolVersion: 2026-07-28`). It ships as a single CLI binary (`rune-kit`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
 
 In addition to executable plugins, Rune Kit natively manages declarative content artifacts called **Skills** (instruction sets, system prompts, reference packages), and features a host-managed external binary provisioning engine that automatically fetches, verifies, and configures standalone CLI utilities (such as `ffmpeg` or `yt-dlp`) on clean machines without requiring third-party package managers.
 
@@ -107,13 +107,13 @@ Linux / macOS:
 curl -fsSL https://raw.githubusercontent.com/shba007/rune-kit/main/install.sh | sh
 ```
 
-Windows installs `rune-kit.exe` in `%LOCALAPPDATA%\Programs\rune-kit` and adds
+Windows installs `rune-kit.exe` in `%USERPROFILE%\rune` and adds
 that folder to your user PATH and the current PowerShell session. Linux/macOS
-install `rune-kit` in `~/.local/bin`; the script prints the PATH command when needed.
+install `rune-kit` in `~/rune`; the script adds the root once to `~/.profile` (set `RUNE_KIT_NO_MODIFY_PATH=1` to leave PATH unchanged).
 Re-running installs the selected release again. Downloads are verified before an
 existing executable is replaced. Stop active gateways before upgrading on Windows.
 
-Override `RUNE_KIT_VERSION` (for example `v0.3.1`), `RUNE_KIT_INSTALL_DIR`, or
+Override `RUNE_KIT_VERSION` (for example `v0.5.0`), `RUNE_KIT_INSTALL_DIR`, or
 `RUNE_KIT_BASE_URL` (release-download URL or local mirror directory). A mirror
 requires an explicit version and an archive plus its `.sha256` file. On Windows,
 `RUNE_KIT_NO_MODIFY_PATH=1` leaves both user and session PATH unchanged.
@@ -121,7 +121,7 @@ requires an explicit version and an archive plus its `.sha256` file. On Windows,
 For example, to pin a version in PowerShell:
 
 ```powershell
-$env:RUNE_KIT_VERSION = 'v0.3.1'
+$env:RUNE_KIT_VERSION = 'v0.5.0'
 # Run the installer after it is published.
 ```
 
@@ -132,10 +132,10 @@ Linux/macOS require checksum sidecars, introduced with the renamed release.
 
 **Migration:** change MCP client commands from `rune` to `rune-kit` and restart
 terminals/clients after installing. No `rune` alias is installed and unrelated old
-executables are not deleted. Plugin, skill and cache data already live in the
-`rune-kit` data folder below, so no data move is needed. Old installs can be removed
+executables are not deleted. Plugin, skill and cache data use the
+`~/rune/tools` folder. Legacy managed storage is copied on first use; originals remain available for recovery. Old installs can be removed
 manually after clients have switched. Self-update accepts both old and new archive
-binary names. The command rename should ship as the next minor release (0.4.0).
+binary names. Clients using initialization must migrate to the MCP 2026-07-28 request format before upgrading to 0.5.0.
 
 ### Prebuilt Binaries
 
@@ -366,18 +366,12 @@ rune-kit self-update --version 0.2.1 --force
 
 ## File System & Storage Layout
 
-Rune Kit stores data under the standard platform data directory via [`dirs::data_dir()`](https://docs.rs/dirs/latest/dirs/fn.data_dir.html):
-
-| Platform | Location |
-| :--- | :--- |
-| **Linux** | `~/.local/share/rune-kit/` |
-| **macOS** | `~/Library/Application Support/rune-kit/` |
-| **Windows** | `%APPDATA%\rune-kit\` (`C:\Users\<User>\AppData\Roaming\rune-kit\`) |
+Rune Kit stores managed data under `~/rune/tools` on every platform. An absolute `RUNE_KIT_DATA_DIR` overrides this location. The default executable directory is `~/rune`, shared with Infer. Legacy platform data is copied on first use; originals remain intact and conflicts fail clearly.
 
 ### Directory Structure
 
 ```text
-<data_dir>/rune-kit/
+<user-home>/rune/tools/
 ├── installed.json                 # Lockfile tracking installed plugins, hashes, paths
 ├── installed_skills.json          # Lockfile tracking installed skills and file checksums
 ├── plugins/                       # Executable plugin binaries
@@ -579,3 +573,5 @@ This project is licensed under the [MIT License](LICENSE).
 Copyright (c) 2024 Shirsendu Bairagi.
 
 [![Contributors](https://contrib.rocks/image?repo=shba007/rune-kit)](https://github.com/shba007/rune-kit/graphs/contributors)
+
+Managed storage defaults to `~/rune/tools` (plugins in `plugins/`). Set an absolute `RUNE_KIT_DATA_DIR` to override it. Legacy platform data is copied on first use, with originals retained; conflicts stop migration. See [MCP contract](docs/MCP-CONTRACT.md) for the new request format.
