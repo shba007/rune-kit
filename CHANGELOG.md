@@ -75,6 +75,14 @@
 - apply code fixes [skip ci] - (340be1c) - shba007
 
 - - -
+## [v0.4.0](https://github.com/shba007/rune-kit/compare/e054cf250d47a85480b6e85f3ca7094c2b19a9d0..v0.4.0) - 2026-10-23
+#### 🚀 Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) (**cli**) prepare rune-kit 0.4.0 and bound WASI filesystem roots - ([ba7347e](https://github.com/shba007/rune-kit/commit/ba7347e5cc8d85c907c3c04872f7b189a9135d10)) - Shirsendu Bairagi
+#### 📚 Documentation
+- (**handoff**) record verified 0.3.1 Windows release [skip ci] - ([e054cf2](https://github.com/shba007/rune-kit/commit/e054cf250d47a85480b6e85f3ca7094c2b19a9d0)) - Shirsendu Bairagi
+
+- - -
+
 ## [v0.3.1](https://github.com/shba007/rune-kit/compare/9c4e41a1d06a5f7ea2af70450308a22ba4d4729c..v0.3.1) - 2026-10-21
 #### 🐛 Bug Fixes
 - (**protocol**) accept simultaneous MCP annotation spellings - ([9c4e41a](https://github.com/shba007/rune-kit/commit/9c4e41a1d06a5f7ea2af70450308a22ba4d4729c)) - Shirsendu Bairagi
