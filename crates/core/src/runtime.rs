@@ -341,16 +341,22 @@ impl WasmPluginInstance {
             extism_manifest = extism_manifest.with_allowed_host(printer_ip);
         }
 
-        if let Some(ref fs) = manifest.capabilities.filesystem
-            && let Some(ref param_key) = fs.root_param
-            && let Some(root_path) = get_param(param_key)
-        {
-            extism_manifest = extism_manifest.with_allowed_path(root_path.clone(), root_path);
-        } else if let Some(allowed_dir) = get_param("allowed_dir") {
-            extism_manifest = extism_manifest.with_allowed_path(allowed_dir.clone(), allowed_dir);
-        } else {
-            extism_manifest = extism_manifest.with_allowed_path(".".to_string(), ".");
+        let root_key = manifest
+            .capabilities
+            .filesystem
+            .as_ref()
+            .and_then(|fs| fs.root_param.as_deref())
+            .unwrap_or("allowed_dir");
+        if let Some(root) = get_param(root_key) {
+            let path = std::path::Path::new(&root);
+            if root.trim().is_empty() || !path.is_absolute() || !path.is_dir() {
+                return Err(RuntimeError::Execution(format!(
+                    "Filesystem root '{root_key}' must be an existing absolute directory"
+                )));
+            }
+            extism_manifest = extism_manifest.with_allowed_path(root.clone(), root);
         }
+        // No configured root means no WASI preopen, never the host working directory.
 
         let extism_manifest = extism_manifest.with_config(params.clone().into_iter());
 

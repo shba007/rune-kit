@@ -91,10 +91,9 @@ See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibilit
 
 ## Installation
 
-### Install script (next release)
+### Install script
 
-These installers and the renamed CLI are prepared in source and are not yet on
-`main` or published in a release. After that release, install without Rust or admin rights:
+Install release 0.4.0 or newer without Rust or administrator rights:
 
 Windows (PowerShell 5.1 or newer):
 

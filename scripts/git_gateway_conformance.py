@@ -12,8 +12,8 @@ import threading
 
 
 class Gateway:
-    def __init__(self, rune, plugin, read_only=False):
-        args = [str(rune), 'run', str(plugin)]
+    def __init__(self, rune, plugin, read_only=False, extra_args=()):
+        args = [str(rune), 'run', str(plugin), *extra_args]
         if read_only:
             args.append('--read-only')
         self.process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

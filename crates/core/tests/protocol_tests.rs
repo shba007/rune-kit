@@ -469,3 +469,17 @@ fn protocol_batches_omit_notifications() {
         -32600
     );
 }
+
+#[test]
+fn wasm_invalid_filesystem_roots_are_rejected() {
+    use rune_kit_core::runtime::WasmPluginInstance;
+    for root in ["", ".", "relative/path", "Z:/rune-kit-nonexistent-root"] {
+        let result = WasmPluginInstance::load_from_bytes(
+            "root-test",
+            wat::parse_str("(module)").unwrap(),
+            std::collections::HashMap::from([("allowed_dir".to_string(), root.to_string())]),
+            PluginManifest::default(),
+        );
+        assert!(result.is_err(), "invalid root accepted: {root}");
+    }
+}

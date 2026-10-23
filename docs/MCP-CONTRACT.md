@@ -11,7 +11,7 @@ tests are not full MCP conformance certification.
 
 Annotation keys are `readOnlyHint`, `destructiveHint`, `idempotentHint` and
 `openWorldHint`, with optional `title`. Current compatibility output also retains
-legacy spellings throughout 0.3.x. Output removal requires a minor-version release
+legacy spellings throughout 0.4.x as well as 0.3.x. Output removal requires a minor-version release
 and an explicit migration note; legacy input stays supported. Both spellings may
 appear in one object if their boolean values agree. Conflicting pairs reject the
 plugin's discovery response, naming both keys. Non-boolean declarations (including
@@ -65,3 +65,30 @@ Set `CARGO_HUSKY_DONT_INSTALL_HOOKS=true` where hook installation is unavailable
 Protocol tests include native fixtures, WASM deadlines and batch notification
 handling. A prepared source version is not evidence of a published release;
 release metadata and downloadable assets remain owned by release automation.
+
+## Studio Cycle 2 invocation
+
+Prefer `rune-kit --version` (0.4.0+). The released fallback is `rune --version`
+(0.3.1); discover both commands without assuming the new one is installed.
+Use `rune-kit run <installed-name-or-artifact> --read-only --allow-tool get_current_time --timeout 2`.
+Allowlist entries may be local tool names or complete names returned by tools/list.
+Never construct a namespace from assumptions: use the returned tool name.
+Initialize with protocolVersion 2025-03-26, capabilities {}, and clientInfo;
+then send notifications/initialized, then tools/list and tools/call with discovered schema.
+Discovery failures have -32000 and a message starting `Tool discovery failed:`;
+timeouts have -32000 and `Tool execution timed out after X seconds`; other runtime
+failures also share -32000. Do not classify by code alone. Cancellation carries
+params.requestId, emits no response to the notification, and an interrupted call
+can still produce -32800 with its original ID. Discard late replies by request ID.
+
+For the filesystem pilot configure the host root, never model arguments:
+`rune-kit run rune-filesystem-0.4.0 --read-only -p allowed_dir=D:/Pilot`.
+The root must be an existing absolute host directory. Kit maps precisely that
+host string to the same guest path and forwards allowed_dir unchanged as plugin
+configuration. Use forward slashes on Windows and relative call paths such as
+hello.txt or . . Missing configuration creates no WASI preopen; invalid roots
+are rejected. No working-directory fallback remains in 0.4.0.
+The released filesystem 0.4.0 artifact declares readOnlyHint=false for read_text_file
+and list_directory: both are deliberately unavailable in read-only mode until
+Tools fixes its annotations. Normal-mode diagnostic calls succeeded through an
+installed WASM artifact in isolated APPDATA; this is not pilot approval.

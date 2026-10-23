@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased (target 0.4.0)
+## 0.4.0 - 2026-10-23
+- Missing WASI filesystem roots no longer preopen the working directory; explicit roots must be existing absolute directories. Legacy annotation output remains enabled.
 - Rename the CLI to `rune-kit` and release archives to `rune-kit-<tag>-<target>`. Update MCP client commands from `rune` to `rune-kit`; existing rune-kit data folders are preserved.
 - Add verified, per-user Windows and Linux/macOS installers, version pinning and checksum sidecars.
 - Self-update accepts both canonical rune-kit and legacy rune archive binaries.
