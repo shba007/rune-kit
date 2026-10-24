@@ -193,10 +193,10 @@ pub fn render_at(
         .parent()
         .unwrap();
     let coco = CocoGitto::get_at(root.to_path_buf()).map_err(|e| e.to_string())?;
-    // The public API returns the release type. Read one commit to obtain it,
+    // Obtain the release type using only HEAD, including depth-one checkouts,
     // then supply the already-selected, reviewed history without touching Git.
     let mut release = coco
-        .get_changelog("HEAD~1..HEAD", false)
+        .get_changelog("HEAD..HEAD", false)
         .map_err(|e| e.to_string())?;
     release.previous = None;
     release.commits = commits.iter().filter_map(parsed).map(Into::into).collect();
