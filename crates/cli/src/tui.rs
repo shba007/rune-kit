@@ -9,7 +9,7 @@ use ratatui::{
 };
 use std::{sync::Arc, time::Duration};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn safe(value: &str) -> String {
+pub(crate) fn safe(value: &str) -> String {
     value.chars().filter(|c| !c.is_control()).collect()
 }
 fn panel(title: &'static str, focus: bool) -> Block<'static> {
@@ -33,24 +33,46 @@ impl Drop for Restore {
 }
 
 /// Attached to this server's observed state; never probes separate plugin processes.
-pub fn server_dashboard(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) -> Result<()> {
+pub fn server_dashboard(
+    state: Arc<std::sync::Mutex<crate::server::Snapshot>>,
+    router: Arc<std::sync::Mutex<rune_kit_core::McpRouter>>,
+    config: Arc<std::sync::Mutex<crate::configuration::Configuration>>,
+) -> Result<()> {
     let mut terminal = ratatui::try_init()?;
     let _restore = Restore;
     let mut selected = 0usize;
     let mut tools_view = false;
     let mut configuration = false;
     let mut discovery: Option<std::thread::JoinHandle<()>> = None;
+    let mut editor: Option<crate::config_editor::Editor> = None;
     loop {
+        if let Some(editor) = &mut editor {
+            editor.poll();
+        }
         let snapshot = state.lock().unwrap().clone();
         if snapshot.status != "listening" {
             break;
         }
-        terminal
-            .draw(|frame| draw_server(frame, &snapshot, selected, tools_view, configuration))?;
+        terminal.draw(|frame| {
+            draw_server(frame, &snapshot, selected, tools_view, configuration);
+            if let Some(editor) = &editor {
+                let fields = config.try_lock().map(|c| c.fields()).unwrap_or_default();
+                editor.draw(frame, &fields);
+            }
+        })?;
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                break;
+            }
+            if let Some(active) = &mut editor {
+                if active.key(key.code, config.clone(), router.clone(), state.clone()) {
+                    editor = None;
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
@@ -72,6 +94,7 @@ pub fn server_dashboard(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) -
                     discovery = Some(std::thread::spawn(move || discover(state)));
                 }
                 KeyCode::Char('i') => configuration = !configuration,
+                KeyCode::Char('e') => editor = Some(Default::default()),
                 KeyCode::Tab => {
                     configuration = false;
                     tools_view = !tools_view;
@@ -87,6 +110,10 @@ pub fn server_dashboard(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) -
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
+
+pub(crate) fn header_height(height: u16) -> u16 {
+    if height >= 26 { 12 } else { 6 }
+}
 
 fn label(key: &str, value: impl Into<String>) -> Line<'static> {
     Line::from(vec![
@@ -124,34 +151,55 @@ fn draw_server(
         return;
     }
     let [header, body, footer] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(header_height(area.height)),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .areas(area);
     let seconds = snapshot.started.elapsed().as_secs();
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" ᚱ Rune Kit ", Style::new().fg(ACCENT).bold()),
-            Span::styled(
-                format!("v{}  ", env!("CARGO_PKG_VERSION")),
-                Style::new().fg(DIM),
-            ),
-            Span::styled("● ", Style::new().fg(Color::White)),
-            Span::raw(format!("{}  ", safe(&snapshot.endpoint))),
-            Span::styled(
-                format!(
-                    "up {:02}:{:02}:{:02}",
-                    seconds / 3600,
-                    seconds / 60 % 60,
-                    seconds % 60
-                ),
-                Style::new().fg(DIM),
-            ),
-        ]))
-        .block(panel("", false)),
-        header,
+    let mut heading = vec![Line::styled(
+        "rune-kit",
+        Style::new().fg(Color::White).bold(),
+    )];
+    // The nine dot rows follow public/logo.svg's circle grid and relative radii.
+    let logo = if area.height >= 26 {
+        vec![
+            "      · · ·",
+            "    · • • • ·",
+            "  · • ● ● ● • ·",
+            "· • ● ● ● ● ● • ·",
+            "· • ● ● ● ● ● • ·",
+            "· • ● ● ● ● ● • ·",
+            "  · • ● ● ● • ·",
+            "    · • • • ·",
+            "      · · ·",
+        ]
+    } else {
+        vec!["  · • ·", "· ● ● ● ·", "  · • ·"]
+    };
+    heading.extend(
+        logo.into_iter()
+            .map(|line| Line::styled(line, Style::new().fg(Color::White))),
     );
+    heading.push(Line::from("Rune MCP Engine & Package Manager"));
+    heading.push(Line::from(vec![
+        Span::styled(
+            format!("v{}  ", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(DIM),
+        ),
+        Span::styled("● ", Style::new().fg(Color::White)),
+        Span::raw(format!("{}  ", safe(&snapshot.endpoint))),
+        Span::styled(
+            format!(
+                "up {:02}:{:02}:{:02}",
+                seconds / 3600,
+                seconds / 60 % 60,
+                seconds % 60
+            ),
+            Style::new().fg(DIM),
+        ),
+    ]));
+    frame.render_widget(Paragraph::new(heading), header);
     if configuration {
         let lines = vec![
             label("Status", &snapshot.status),
@@ -234,6 +282,7 @@ fn draw_server(
             ("Tab", "view"),
             ("d", "discover"),
             ("i", "config"),
+            ("e", "edit"),
             ("q", "stop"),
         ]
         .as_slice()
@@ -243,6 +292,7 @@ fn draw_server(
             ("↑↓", "select"),
             ("d", "discover"),
             ("i", "config"),
+            ("e", "edit"),
             ("r", "refresh"),
             ("q", "stop"),
         ]
@@ -357,7 +407,7 @@ fn draw_activity(
         &mut ListState::default().with_selected(if empty { None } else { Some(selected) }),
     );
 }
-fn compatibility(frame: &mut Frame) {
+pub(crate) fn compatibility(frame: &mut Frame) {
     let no_color = std::env::var_os("NO_COLOR").is_some();
     let ascii = std::env::var_os("RUNE_ASCII").is_some();
     if !no_color && !ascii {
@@ -492,7 +542,8 @@ mod tests {
     fn server_layout_keeps_inventory_activity_and_configuration_readable() {
         let snapshot = snapshot();
         let screen = render(&snapshot, 110, 28, false, false);
-        assert!(screen.contains("Rune Kit"));
+        assert!(screen.contains("rune-kit"));
+        assert!(screen.contains("Rune MCP Engine & Package Manager"));
         assert!(screen.contains("Native"));
         assert!(screen.contains("Requests"));
         assert!(!screen.contains("Executable:"));

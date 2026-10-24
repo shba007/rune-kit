@@ -62,7 +62,7 @@ pub struct Snapshot {
     pub discovery_note: String,
 }
 struct Shared {
-    router: Mutex<McpRouter>,
+    router: Arc<Mutex<McpRouter>>,
     snapshot: Arc<Mutex<Snapshot>>,
     address: SocketAddr,
     sequence: AtomicU64,
@@ -678,7 +678,11 @@ async fn shutdown_signal() {
     }
 }
 
-pub async fn serve(router: McpRouter, options: Options) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve(
+    router: McpRouter,
+    options: Options,
+    configuration: crate::configuration::Configuration,
+) -> Result<(), Box<dyn std::error::Error>> {
     if !options.bind.is_loopback() {
         return Err("Only loopback binding is supported".into());
     }
@@ -702,7 +706,7 @@ pub async fn serve(router: McpRouter, options: Options) -> Result<(), Box<dyn st
         discovery_note: "Press d to discover tools in this server".into(),
     }));
     let state = Arc::new(Shared {
-        router: Mutex::new(router),
+        router: Arc::new(Mutex::new(router)),
         snapshot: snapshot.clone(),
         address,
         sequence: AtomicU64::new(1),
@@ -716,11 +720,14 @@ pub async fn serve(router: McpRouter, options: Options) -> Result<(), Box<dyn st
     let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
     use std::io::IsTerminal;
     let dashboard_stop = stop_tx.clone();
+    let dashboard_router = state.router.clone();
+    let configuration = Arc::new(Mutex::new(configuration));
     let _keep_stop_sender = stop_tx;
     let dashboard =
         if !options.headless && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
             Some(tokio::task::spawn_blocking(move || {
-                let result = crate::tui::server_dashboard(snapshot);
+                let result =
+                    crate::tui::server_dashboard(snapshot, dashboard_router, configuration);
                 let _ = dashboard_stop.blocking_send(());
                 result.map_err(|e| e.to_string())
             }))

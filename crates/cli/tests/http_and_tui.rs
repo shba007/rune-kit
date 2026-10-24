@@ -25,6 +25,118 @@ fn fixture() -> PathBuf {
 }
 
 mod support;
+
+#[test]
+fn dashboard_configuration_applies_to_live_native_instance_and_preserves_failed_edits() {
+    use rune_kit_cli::configuration::{Configuration, Plugin};
+    use rune_kit_core::{ExecutionKind, McpRouter, PluginManifest};
+    use std::sync::{Arc, Mutex};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("dashboard.json");
+    let manifest: PluginManifest = serde_json::from_value(serde_json::json!({"configuration": {
+        "schema_version":1,"fields": {
+            "tools_payload":{"type":"string","description":"Test tool inventory","required":true,"secret":false,"env":["RUNE_FIXTURE_TOOLS"]},
+            "api_key":{"type":"string","description":"Test credential","required":false,"secret":true,"env":["FIXTURE_SECRET"]},
+            "allowed_dir":{"type":"string","description":"Filesystem root","required":false,"secret":false,"env":["ALLOWED_DIR"]}
+        }
+    }})).unwrap();
+    let plugin = Plugin {
+        name: "fixture".into(),
+        path: fixture(),
+        kind: ExecutionKind::Native,
+        manifest,
+        params: Default::default(),
+    };
+    let mut config = Configuration::read(path.clone()).unwrap();
+    let router = Arc::new(Mutex::new(McpRouter::new()));
+    router
+        .lock()
+        .unwrap()
+        .register("fixture".into(), plugin.load(config.settings()).unwrap());
+    config.plugins.push(plugin);
+    let field = config
+        .fields()
+        .into_iter()
+        .find(|f| f.key == "tools_payload")
+        .unwrap();
+    let payload =
+        serde_json::json!({"tools":[{"name":"configured","description":"Configured fixture","inputSchema":{"type":"object"}}]})
+            .to_string();
+    config
+        .apply(&router, &field, payload.clone(), false)
+        .unwrap();
+    let reply = router
+        .lock()
+        .unwrap()
+        .handle_jsonrpc(&rpc("tools/list", serde_json::json!(1), serde_json::json!({})).to_string())
+        .unwrap();
+    assert!(reply.to_string().contains("fixture__configured"), "{reply}");
+    let saved = std::fs::read(&path).unwrap();
+    let stage = path.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&stage, b"retained staging file").unwrap();
+    assert!(
+        config
+            .apply(
+                &router,
+                &field,
+                payload.replace("configured", "should_not_apply"),
+                false
+            )
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&stage).unwrap(), b"retained staging file");
+    std::fs::remove_file(stage).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    let reply = router
+        .lock()
+        .unwrap()
+        .handle_jsonrpc(&rpc("tools/list", serde_json::json!(2), serde_json::json!({})).to_string())
+        .unwrap();
+    assert!(reply.to_string().contains("fixture__configured"));
+    assert!(!reply.to_string().contains("should_not_apply"));
+    let secret = config
+        .fields()
+        .into_iter()
+        .find(|f| f.key == "api_key")
+        .unwrap();
+    config
+        .apply(&router, &secret, "private-test-credential".into(), false)
+        .unwrap();
+    assert!(
+        !String::from_utf8(std::fs::read(&path).unwrap())
+            .unwrap()
+            .contains("private-test-credential")
+    );
+    assert!(
+        config
+            .fields()
+            .into_iter()
+            .find(|f| f.key == "api_key")
+            .unwrap()
+            .value
+            .is_empty()
+    );
+    let fs_field = config
+        .fields()
+        .into_iter()
+        .find(|f| f.key == "allowed_dir")
+        .unwrap();
+    assert!(
+        config
+            .apply(&router, &fs_field, "/external".into(), false)
+            .is_err()
+    );
+    let guard = router.lock().unwrap();
+    assert!(config.apply(&router, &field, "busy".into(), false).is_err());
+    drop(guard);
+    std::fs::write(&path, b"external edit").unwrap();
+    assert!(config.apply(&router, &field, payload, false).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"external edit");
+    std::fs::write(&path, saved).unwrap();
+    let restored = Configuration::read(path).unwrap();
+    assert!(restored.settings().plugins["fixture"].contains_key("tools_payload"));
+    assert!(!restored.settings().plugins["fixture"].contains_key("api_key"));
+}
 use serde_json::{Value, json};
 use std::{fs, process::Command, time::Duration};
 use xtask::wire::{Gateway, metadata};
@@ -161,7 +273,7 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         let mut evidence = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let expected = if attached {
-            "Rune Kit"
+            "Rune MCP Engine & Package Manager"
         } else if missing {
             "Discovery failed"
         } else {

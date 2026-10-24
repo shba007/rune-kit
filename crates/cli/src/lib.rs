@@ -119,6 +119,8 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("Invalid KEY=VALUE pair: {}", s))
 }
 
+mod config_editor;
+pub mod configuration;
 pub mod output;
 pub mod server;
 pub mod tui;
@@ -165,6 +167,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(target) if !all => vec![target],
                 _ => {let mut names:Vec<_>=lockfile.plugins.keys().cloned().collect(); names.sort(); names},
             };
+            let mut dashboard_config = configuration::Configuration::read(metadata_path.parent().unwrap().join("dashboard.json"))?;
             let mut loaded=Vec::new(); let mut roots=Vec::new();
             for target in targets {
                 let mut params = lockfile.plugins.get(&target).map(|entry|entry.default_params.clone()).unwrap_or_default();
@@ -177,10 +180,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let kind=if path.extension().is_some_and(|v|v=="wasm") {ExecutionKind::Wasm} else {ExecutionKind::Native};
                     (path,kind,"local artifact".into())
                 };
-                let instance=match kind {
-                    ExecutionKind::Wasm => PluginInstance::load_wasm_from_file(&target,path,params),
-                    ExecutionKind::Native => PluginInstance::load_native_from_file(&target,path,params),
-                }.map_err(|e|format!("Cannot load plugin {target}: {e}. Repair its installation or select a working plugin explicitly."))?;
+                let spec = configuration::Plugin { name: target.clone(), path: path.clone(), kind: kind.clone(), params: params.clone(),
+                    manifest: lockfile.plugins.get(&target).and_then(|p| p.manifest.clone()).unwrap_or_default() };
+                let instance = if lockfile.plugins.contains_key(&target) {
+                    spec.load(dashboard_config.settings()).map_err(|e| format!("Cannot load plugin {target}: {e}"))?
+                } else {
+                    match kind {
+                        ExecutionKind::Wasm => PluginInstance::load_wasm_from_file(&target,path,params),
+                        ExecutionKind::Native => PluginInstance::load_native_from_file(&target,path,params),
+                    }.map_err(|e|format!("Cannot load plugin {target}: {e}"))?
+                };
+                dashboard_config.plugins.push(spec);
                 loaded.push(format!("{target} {version}: loaded ({kind:?}); discovery pending"));
                 if let Some(manifest) = lockfile.plugins.get(&target).and_then(|entry| entry.manifest.as_ref()) {
                     for dependency in manifest.dependencies.binaries.keys() {
@@ -195,7 +205,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 router.register(target,instance);
             }
-            server::serve(router,server::Options {bind,port,headless,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}).await?;
+            server::serve(router,server::Options {bind,port,headless,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}, dashboard_config).await?;
         }
 
         Commands::Install {
