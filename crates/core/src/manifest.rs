@@ -20,6 +20,8 @@ pub struct PluginInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginManifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<crate::registry::Configuration>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

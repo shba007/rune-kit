@@ -119,6 +119,18 @@ impl Default for PackageManager {
 }
 
 impl PackageManager {
+    /// Read configuration for an exact published plugin version without installing it.
+    pub async fn fetch_version_metadata(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<crate::registry::VersionMetadata, PackageError> {
+        let index: serde_json::Value = reqwest::Client::new()
+            .get("https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json")
+            .send().await?.error_for_status()?.json().await?;
+        crate::registry::VersionMetadata::from_value(&index[name]["versions"][version])
+    }
+
     pub fn new() -> Self {
         let base_dir = crate::paths::managed_root().expect("Cannot initialize Kit storage");
 
@@ -160,7 +172,13 @@ impl PackageManager {
     pub async fn fetch_registry(&self) -> Result<Vec<RegistryPluginSummary>, PackageError> {
         let registry_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json";
         let client = reqwest::Client::builder().user_agent("rune-kit").build()?;
-        let index: serde_json::Value = client.get(registry_url).send().await?.json().await?;
+        let index: serde_json::Value = client
+            .get(registry_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
 
         let mut results = Vec::new();
         if let Some(map) = index.as_object() {
@@ -687,7 +705,13 @@ impl PackageManager {
     ) -> Result<FetchedBundle, PackageError> {
         let registry_url = "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json";
         let client = reqwest::Client::new();
-        let index: serde_json::Value = client.get(registry_url).send().await?.json().await?;
+        let index: serde_json::Value = client
+            .get(registry_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
 
         let pkg = index
             .get(name)
@@ -695,6 +719,7 @@ impl PackageManager {
 
         let ver = version.unwrap_or_else(|| pkg["latest"].as_str().unwrap_or("0.1.0").to_string());
         let ver_obj = &pkg["versions"][&ver];
+        let metadata = crate::registry::VersionMetadata::from_value(ver_obj)?;
         let triple = current_target_triple();
 
         let native_url = ver_obj
@@ -721,15 +746,19 @@ impl PackageManager {
             )));
         }
 
+        // Validate all selected checksum entries before downloading or probing code.
+        for url in [wasm_url, native_url].into_iter().flatten() {
+            metadata.checksum(url)?;
+        }
         let wasm_bytes = if let Some(url) = wasm_url {
-            let bytes = client.get(url).send().await?.bytes().await?.to_vec();
+            let bytes = download_plugin(&client, url, metadata.checksum(url)?).await?;
             Some(bytes)
         } else {
             None
         };
 
         let native_bytes = if let Some(url) = native_url {
-            let bytes = client.get(url).send().await?.bytes().await?.to_vec();
+            let bytes = download_plugin(&client, url, metadata.checksum(url)?).await?;
             Some(bytes)
         } else {
             if prefer_native {
@@ -746,10 +775,43 @@ impl PackageManager {
             version: Some(ver),
             wasm_bytes,
             native_bytes,
-            manifest_toml: None,
+            manifest_toml: Some(
+                toml::to_string(&PluginManifest {
+                    configuration: Some(metadata.configuration),
+                    ..Default::default()
+                })
+                .map_err(|e| PackageError::InvalidSpec(e.to_string()))?,
+            ),
             source: "registry".to_string(),
         })
     }
+}
+
+async fn download_plugin(
+    client: &reqwest::Client,
+    url: &str,
+    checksum: &crate::registry::ArtifactChecksum,
+) -> Result<Vec<u8>, PackageError> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|size| size != checksum.size)
+    {
+        return Err(PackageError::InvalidSpec(
+            "Plugin artifact size mismatch; installation was not changed".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if (bytes.len() as u64).saturating_add(chunk.len() as u64) > checksum.size {
+            return Err(PackageError::InvalidSpec(
+                "Plugin artifact exceeds published size; installation was not changed".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    checksum.verify(&bytes)?;
+    Ok(bytes)
 }
 
 pub struct SkillManager {
@@ -1470,6 +1532,46 @@ fn chrono_timestamp() -> u64 {
 mod cli_archive_tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn registry_download_checks_http_status_and_integrity_before_returning_payload() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (status, payload, success) in [
+            ("200 OK", "plugin", true),
+            ("200 OK", "broken", false),
+            ("200 OK", "short", false),
+            ("404 Not Found", "plugin", false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/plugin.wasm", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    socket.read_exact(&mut byte).await.unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 4096);
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            });
+            let checksum = crate::registry::ArtifactChecksum {
+                sha256: Sha256::digest(b"plugin")
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+                size: 6,
+            };
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            let result = download_plugin(&client, &url, &checksum).await;
+            assert_eq!(result.is_ok(), success, "{status}: {payload}: {result:?}");
+            server.await.unwrap();
+        }
+    }
 
     #[test]
     fn self_update_accepts_new_and_legacy_binary_names() {

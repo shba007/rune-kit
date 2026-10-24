@@ -2,6 +2,7 @@ pub mod manifest;
 pub mod package;
 pub mod protocol;
 pub mod provision;
+pub mod registry;
 pub mod runtime;
 
 pub use manifest::{
