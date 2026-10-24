@@ -58,6 +58,8 @@ pub struct Snapshot {
     pub data_root: std::path::PathBuf,
     pub active: Vec<Call>,
     pub recent: VecDeque<Call>,
+    pub tools: Vec<String>,
+    pub discovery_note: String,
 }
 struct Shared {
     router: Mutex<McpRouter>,
@@ -438,6 +440,20 @@ async fn handle(State(state): State<Arc<Shared>>, request: axum::extract::Reques
         };
         let mut snapshot = shared.snapshot.lock().unwrap();
         if record.method == "tools/list" {
+            if !flag.load(Ordering::Relaxed)
+                && let Some(tools) = response
+                    .as_ref()
+                    .and_then(|r| r["result"]["tools"].as_array())
+            {
+                snapshot.discovery_note =
+                    format!("{} tools returned by the last discovery", tools.len());
+                snapshot.tools = tools
+                    .iter()
+                    .take(256)
+                    .filter_map(|tool| tool["name"].as_str())
+                    .map(|name| name.chars().take(160).collect())
+                    .collect();
+            }
             let state = if response.as_ref().is_some_and(|r| r.get("error").is_some()) {
                 "discovery failed (see client error)"
             } else {
@@ -682,6 +698,8 @@ pub async fn serve(router: McpRouter, options: Options) -> Result<(), Box<dyn st
         data_root: rune_kit_core::paths::managed_root()?,
         active: Vec::new(),
         recent: VecDeque::new(),
+        tools: Vec::new(),
+        discovery_note: "Press d to discover tools in this server".into(),
     }));
     let state = Arc::new(Shared {
         router: Mutex::new(router),

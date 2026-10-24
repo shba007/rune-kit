@@ -118,78 +118,15 @@ fn installed(root: &std::path::Path, plugin: &std::path::Path) {
     fs::write(root.join("installed.json"),json!({"version":1,"plugins":{"fixture":{"name":"fixture","version":"0.1.0","binary_path":plugin,"execution_kind":"native","sha256":"fixture","source":"local","default_params":{},"manifest":{"capabilities":{"filesystem":{"mode":"scoped","root_param":"allowed_dir"}},"dependencies":{"binaries":{"missing-helper":{"version":"1","optional":false}}}}}}}).to_string()).unwrap();
 }
 #[test]
-fn tui_plain_inventory_discovers_real_tools_and_reports_missing_payloads() {
-    let root = tempfile::tempdir().unwrap();
-    installed(root.path(), &fixture());
-    let mut command = Command::new(support::binary());
-    command
-        .args([
-            "tui",
-            "--json",
-            "--read-only",
-            "-p",
-            "allowed_dir=/explicit/root",
-        ])
-        .env("RUNE_KIT_DATA_DIR", root.path());
-    let result = support::output(&mut command);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let inventory: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_eq!(inventory["plugins"][0]["execution"], "Native");
-    assert_eq!(
-        inventory["plugins"][0]["tools"].as_array().unwrap().len(),
-        2
-    );
-    assert_eq!(inventory["plugins"][0]["filesystem_root"], "/explicit/root");
-    assert_eq!(inventory["plugins"][0]["hidden_tools"], 1);
-    assert!(
-        inventory["plugins"][0]["diagnostics"]
-            .to_string()
-            .contains("missing-helper")
-    );
-    installed(root.path(), &root.path().join("missing.exe"));
-    let result = support::output(&mut command);
-    let missing: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert!(
-        missing["plugins"][0]["state"]
-            .as_str()
-            .unwrap()
-            .contains("failed")
-    );
-    assert!(
-        missing["plugins"][0]["diagnostics"]
-            .to_string()
-            .contains("reinstall")
-    );
-}
-#[test]
-fn tui_empty_and_noninteractive_invocations_do_not_emit_escape_sequences() {
-    let root = tempfile::tempdir().unwrap();
-    let mut cmd = Command::new(support::binary());
-    cmd.arg("tui").env("RUNE_KIT_DATA_DIR", root.path());
-    let result = support::output(&mut cmd);
-    assert!(!result.status.success());
-    assert!(result.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("interactive terminal"));
-    cmd.arg("--once");
-    let result = support::output(&mut cmd);
-    assert!(result.status.success());
-    let text = String::from_utf8(result.stdout).unwrap();
-    assert!(text.contains("No plugins installed"));
-    assert!(!text.contains('\u{1b}'));
-}
-
-#[test]
-fn interactive_dashboard_restores_terminal_after_empty_and_failed_discovery() {
+fn serve_dashboard_discovers_tools_and_restores_terminal() {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::io::{Read, Write};
-    for (missing, attached) in [(false, false), (true, false), (false, true)] {
+    for with_plugin in [false, true] {
+        let attached = true;
+        let missing = false;
         let root = tempfile::tempdir().unwrap();
-        if missing {
-            installed(root.path(), &root.path().join("unavailable-plugin.exe"));
+        if with_plugin {
+            installed(root.path(), &fixture());
         }
         let pty = native_pty_system()
             .openpty(PtySize {
@@ -200,11 +137,7 @@ fn interactive_dashboard_restores_terminal_after_empty_and_failed_discovery() {
             })
             .unwrap();
         let mut command = CommandBuilder::new(support::binary());
-        if attached {
-            command.args(["serve", "--port", "0"]);
-        } else {
-            command.arg("tui");
-        }
+        command.args(["serve", "--port", "0"]);
         command.env("RUNE_KIT_DATA_DIR", root.path());
         command.env("TERM", "xterm-256color");
         let mut child = pty.slave.spawn_command(command).unwrap();
@@ -228,7 +161,7 @@ fn interactive_dashboard_restores_terminal_after_empty_and_failed_discovery() {
         let mut evidence = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         let expected = if attached {
-            "SERVER"
+            "Rune Kit"
         } else if missing {
             "Discovery failed"
         } else {
@@ -280,6 +213,32 @@ fn interactive_dashboard_restores_terminal_after_empty_and_failed_discovery() {
                 String::from_utf8_lossy(&evidence).contains("ping"),
                 "Server call was not shown in attached TUI"
             );
+        }
+        writer.write_all(b"d\t").unwrap();
+        writer.flush().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let expected_tools = if with_plugin { "fixture__" } else { "Tools" };
+        while std::time::Instant::now() < deadline
+            && !String::from_utf8_lossy(&evidence).contains(expected_tools)
+        {
+            if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+                evidence.extend(bytes);
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&evidence).contains(expected_tools),
+            "Discovery was not shown: {}",
+            String::from_utf8_lossy(&evidence)
+        );
+        writer.write_all(b"i").unwrap();
+        writer.flush().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && !String::from_utf8_lossy(&evidence).contains("Executable:")
+        {
+            if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+                evidence.extend(bytes);
+            }
         }
         writer.write_all(b"q").unwrap();
         writer.flush().unwrap();
@@ -338,27 +297,6 @@ fn interactive_dashboard_restores_terminal_after_empty_and_failed_discovery() {
         });
         fs::write(destination, evidence).unwrap();
     }
-}
-
-#[test]
-fn dashboard_native_discovery_timeout_is_actionable() {
-    let root = tempfile::tempdir().unwrap();
-    installed(root.path(), &fixture());
-    let start = std::time::Instant::now();
-    let result = support::output(
-        Command::new(support::binary())
-            .args(["tui", "--json"])
-            .env("RUNE_KIT_DATA_DIR", root.path())
-            .env("KIT_FIXTURE_HANG", "1"),
-    );
-    assert!(result.status.success());
-    let inventory: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert!(
-        inventory["plugins"][0]["diagnostics"]
-            .to_string()
-            .contains("timed out")
-    );
-    assert!(start.elapsed() < Duration::from_secs(12));
 }
 
 fn rpc(method: &str, id: Value, params: Value) -> Value {
@@ -764,4 +702,19 @@ fn noninteractive_serve_remains_available_after_stdin_is_closed() {
     let result = support::output(&mut broken);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("Cannot parse"));
+}
+
+#[test]
+fn help_exposes_serve_without_standalone_tui() {
+    let result = support::output(Command::new(support::binary()).arg("--help"));
+    assert!(result.status.success());
+    let help = String::from_utf8(result.stdout).unwrap();
+    assert!(help.contains("serve"));
+    assert!(
+        !help
+            .lines()
+            .any(|line| line.trim_start().starts_with("tui "))
+    );
+    let removed = support::output(Command::new(support::binary()).arg("tui"));
+    assert!(!removed.status.success());
 }

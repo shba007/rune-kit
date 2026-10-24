@@ -6,7 +6,8 @@
     "9186131db473a574c3be4952fddf9c6958a4237c",
     "e89dc7c110a876e4a49dab942519bbbe5e3ecfdd"
   ],
-  "notes_sha256": "cb1a4e27f820d783298e354656d91c4bfc4f64d58dc06f0e82253a67f7e7d3c4",
+  "notes_sha256": "cc14e423c2f9dfe685b961ff97d7bbd51f112398f872249323ca7f27f8384d04",
   "source_head": "9186131db473a574c3be4952fddf9c6958a4237c",
-  "generator": "git-cliff-core 2.14.2"
+  "generator": "cocogitto@7.0.0",
+  "formatted_published_notes": true
 }

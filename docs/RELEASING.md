@@ -12,7 +12,7 @@ GitHub Actions generates release files. No AI service generates release prose.
    PR events and release-branch pushes do not duplicate this pipeline.
 2. Ubuntu and Windows validate build, tests, Clippy, formatting and extraction.
 3. After success, preparation verifies the tested develop SHA, runs the pinned
-   git-cliff package, synchronizes manifests/lockfile and generates CHANGELOG.
+   Cocogitto package, synchronizes manifests/lockfile and generates CHANGELOG.
    Generated files and preparation metadata are validated in that same run.
 4. One release/update-version branch and PR targeting develop is reused. Its
    title and generated commit remain ci(release): update version. GITHUB_TOKEN
@@ -40,8 +40,9 @@ unavailable; the mismatch was checked against the run SHA, commit and workflow.
 
 ## Package policy and local previews
 
-Pinned git-cliff-core =2.14.2 interprets conventional commits, computes versions,
-and renders changelogen-style grouped notes using cliff.toml. Rust integration
+Pinned Cocogitto =7.0.0 interprets conventional commits, computes versions,
+and renders notes through the shared .release/changelog.tera Cocogitto template,
+configured in cog.toml. Rust integration
 only selects reachable reviewed history, synchronizes files and validates state.
 Features advance minor even before 1.0; breaking changes advance minor before
 1.0 and major afterwards; fixes and semantic maintenance/custom types advance
@@ -65,8 +66,10 @@ history does not bump again. --apply is reserved for authorized CI/owner, never
 agents on the working repository. GIT_CLIFF_* environment overrides are rejected
 so local and CI policy cannot silently diverge. Missing, duplicate, empty or
 placeholder version sections fail. Historical sections/tags/releases are retained.
-The existing reviewed 0.6.0 preparation remains intact rather than being rewritten
-solely to change generators; subsequent preparation uses git-cliff.
+The owner-authorized format migration renders existing local sections through
+Cocogitto and refreshes their note receipts. Existing tags and published release
+bodies remain immutable. Kit isolates Cocogitto in xtask/generator because its
+logging dependencies conflict with the Wasmtime runtime dependency graph.
 
 ## GitHub settings and authentication
 

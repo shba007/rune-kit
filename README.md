@@ -177,7 +177,6 @@ Usage: rune-kit <COMMAND>
 
 Commands:
   serve        Start the local MCP HTTP server and attached TUI
-  tui          Inspect installed plugins and run local discovery probes
   install      Install an artifact from registry, URL, or local path
   uninstall    Uninstall an installed artifact (plugin or skill)
   list         List installed artifacts (plugins and skills)
@@ -581,8 +580,7 @@ Managed storage defaults to `~/.rune/tools` (plugins in `plugins/`). Set an abso
 
 Run `rune-kit serve` for the attached HTTP server dashboard (endpoint, uptime,
 loaded/discovered plugins, active/recent requests and restrictions). Use arrows,
-r and q. `rune-kit tui --once` / `--json` remain standalone inventory commands;
-they do not monitor another process. See [dashboard controls](docs/TUI.md).
+Tab to switch calls/tools, d to discover, i for configuration, r to refresh, and q to stop the server. See [dashboard controls](docs/TUI.md).
 
 ## Releases and contributor tooling
 

@@ -280,14 +280,14 @@ Prefer Rust for repository utilities and protocol/installer test harnesses. Boot
 Streamable HTTP uses http://127.0.0.1:47601/mcp by default. Interactive serve starts
 an attached TUI with only this server's observed state; --headless/non-interactive
 serving needs no terminal. Legacy run fails with migration guidance. Native
-plugin pipes and WASM exports remain private ABI. Standalone tui is inventory only.
+plugin pipes and WASM exports remain private ABI. The dashboard is available only through serve.
 Never display secrets or full arguments, or infer status for a separate process.
 
 Only develop pushes trigger integration/preparation, including merge/release
 commits; PR events and release branch pushes do not. Validate generated release
 files in the preparation run. Use GITHUB_TOKEN for PR API operations, GH_TOKEN
 for release branch pushes and publication events. The Rust release utility uses
-pinned git-cliff-core 2.14.2 with cliff.toml, semver validation and toml_edit; valid semantic maintenance/custom commits
+pinned Cocogitto 7.0.0 with cog.toml, semver validation and toml_edit; valid semantic maintenance/custom commits
 are releasable too. No AI service generates release prose. See docs/RELEASING.md.
 
-Agents must not author or edit CHANGELOG entries. CI generates substantive notes from reviewed conventional commits using pinned git-cliff and cliff.toml. Local release-example/release-plan are read-only previews. Main publication validates prepared history and exact notes on every push; no promotion title marker is required.
+Agents must not author or edit CHANGELOG entries. CI generates substantive notes from reviewed conventional commits using pinned Cocogitto and cog.toml. Local release-example/release-plan are read-only previews. Main publication validates prepared history and exact notes on every push; no promotion title marker is required.

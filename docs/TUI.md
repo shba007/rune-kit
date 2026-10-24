@@ -24,17 +24,20 @@ and panic cleanup are NOT CERTAIN (not separately exercised). Server shutdown
 cancels its operations. Native descendants/blocking host
 callbacks may delay complete process exit, without retaining the terminal UI.
 
-Standalone `rune-kit tui` remains an inventory/details/diagnostics view, using
-arrows/j/k, Tab, PgUp/PgDn, r and q. It loads and probes installed plugins for
-its own inventory; it does NOT attach to an independently running server.
-`rune-kit tui --once` and `--json` are non-interactive snapshots. Use the attached
-serve dashboard to see server operations instead.
-
-PTY tests cover standalone empty/failed discovery and attached server entry/exit
-with terminal restoration. TestBackend covers empty/corrupt/narrow layouts.
-See docs/handoff/http-server-report.md for actual platform/test evidence.
+The standalone tui command has been removed. Use serve for both inventory and
+server operations. Tab switches calls/tools; d discovers through this server's
+HTTP endpoint using the same permissions and plugin instances. Discovery is bounded
+and does not run tools. r redraws observed state. Headless serving is unchanged.
 
 The attached server dashboard displays the actual running executable and resolved
 managed data root. Defaults are `~/.rune/rune-kit[.exe]` and `~/.rune/tools`;
 custom executable locations and `RUNE_KIT_DATA_DIR` are shown as resolved, rather
 than inferred from defaults. It observes only its own HTTP server.
+
+The dashboard follows Rune Infer's terminal theme: dim rounded borders, cyan
+headings and focus, white normal status, red failures and compact key chips.
+The main view separates plugin inventory from live/recent requests. Press i for
+configuration, restrictions and full executable/data paths; Tab returns to the
+calls/tools view. At narrow widths the server summary remains available in configuration;
+terminals below 48 columns or 16 rows show a resize hint. NO_COLOR and RUNE_ASCII
+apply to the complete frame, as in Infer. No CPU/health metrics are invented.

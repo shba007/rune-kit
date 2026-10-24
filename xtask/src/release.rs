@@ -1,18 +1,15 @@
-//! Thin integration: git-cliff owns parsing, bumping, grouping and rendering.
-use git_cliff_core::{
-    changelog::Changelog,
-    commit::{Commit, Signature},
-    config::Config,
-    release::Release,
-};
+//! Thin integration: Cocogitto owns semantic classification and Markdown rendering.
+use crate::cocogitto::{Commit, Generated, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{error::Error, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-const GENERATOR: &str = "git-cliff-core 2.14.2";
+const GENERATOR: &str = crate::cocogitto::GENERATOR;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Prepared {
+    #[serde(default)]
+    pub formatted_published_notes: bool,
     pub base_tag: String,
     pub version: String,
     pub commits: Vec<String>,
@@ -48,50 +45,25 @@ fn semver(tag: &str) -> Result<semver::Version> {
         tag.strip_prefix('v').unwrap_or(tag),
     )?)
 }
-fn config(root: &Path) -> Result<Config> {
-    if std::env::vars_os().any(|(k, _)| k.to_string_lossy().starts_with("GIT_CLIFF_")) {
-        return Err(
-            "GIT_CLIFF_ overrides are disabled; reviewed cliff.toml is the release policy".into(),
-        );
-    }
-    Ok(fs::read_to_string(root.join("cliff.toml"))?.parse()?)
+fn config(root: &Path) -> Result<std::path::PathBuf> {
+    Ok(root.join("cog.toml"))
 }
-fn generated<'a>(
-    config: Config,
+fn generated(
+    _config: std::path::PathBuf,
     base: &str,
-    commits: Vec<Commit<'a>>,
+    commits: Vec<Commit>,
     timestamp: i64,
-) -> Result<Changelog<'a>> {
-    let release = Release {
-        commits,
-        previous: Some(Box::new(Release {
-            version: Some(base.into()),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    let mut changelog = Changelog::new(vec![release], config, None)?;
-    if changelog
-        .releases
-        .first()
-        .is_some_and(|r| !r.commits.is_empty())
-    {
-        changelog.bump_version()?;
-        // Package bump sets the clock; replace only the date with reviewed history.
-        changelog.releases[0].timestamp = Some(timestamp);
-    }
-    Ok(changelog)
+) -> Result<Generated> {
+    crate::cocogitto::generate(base, commits, timestamp, None)
 }
-fn render(changelog: &Changelog) -> Result<(String, String)> {
-    let version = changelog.releases[0]
+fn render(generated: &Generated) -> Result<(String, String)> {
+    let version = generated.releases[0]
         .version
         .as_deref()
         .ok_or("No generated version")?;
-    let mut bytes = Vec::new();
-    changelog.generate(&mut bytes)?;
-    Ok((semver(version)?.to_string(), String::from_utf8(bytes)?))
+    Ok((version.to_string(), generated.markdown.clone()))
 }
-fn history(root: &Path, base: &str, end: &str) -> Result<Vec<Commit<'static>>> {
+fn history(root: &Path, base: &str, end: &str) -> Result<Vec<Commit>> {
     let text = output(
         root,
         "git",
@@ -111,7 +83,6 @@ fn history(root: &Path, base: &str, end: &str) -> Result<Vec<Commit<'static>>> {
             let mut commit = Commit::new(v[0].trim().to_owned(), v[1].trim().to_owned());
             commit.author = Signature {
                 name: Some(v[2].into()),
-                email: Some(v[3].into()),
                 timestamp: v[4].trim().parse()?,
             };
             Ok(commit)
@@ -139,6 +110,13 @@ fn read_prepared(root: &Path) -> Result<Option<Prepared>> {
     }
 }
 fn validate_prepared(root: &Path, prepared: &Prepared, current: &str, end: &str) -> Result<()> {
+    if prepared
+        .generator
+        .as_deref()
+        .is_some_and(|g| g != GENERATOR)
+    {
+        return Err("Unsupported prepared changelog generator".into());
+    }
     if prepared.version != current || semver(current)? <= semver(&prepared.base_tag)? {
         return Err("Prepared version is mismatched or does not advance its base".into());
     }
@@ -172,7 +150,7 @@ fn validate_prepared(root: &Path, prepared: &Prepared, current: &str, end: &str)
         .and_then(|r| r.version.as_deref())
         .ok_or("Prepared release has no releasable source")?;
     if semver(calculated)?.to_string() != current {
-        return Err("Prepared version does not match git-cliff calculation".into());
+        return Err("Prepared version does not match Cocogitto calculation".into());
     }
     Ok(())
 }
@@ -189,6 +167,7 @@ pub fn plan(root: &Path) -> Result<Plan> {
         .collect();
     ids.sort();
     let mut prepared = Prepared {
+        formatted_published_notes: false,
         base_tag: base,
         version: current.clone(),
         commits: ids,
@@ -278,7 +257,12 @@ pub fn publication(root: &Path) -> Result<Publication> {
             &output(root, "git", &["show", &format!("{tag}:CHANGELOG.md")])?,
             &current,
         )?;
-        if digest(&tagged_notes) != prepared.notes_sha256 {
+        let original: Prepared = serde_json::from_str(&output(
+            root,
+            "git",
+            &["show", &format!("{tag}:.release-preparation.json")],
+        )?)?;
+        if original.version != current || digest(&tagged_notes) != original.notes_sha256 {
             return Err("Existing tag contains different release notes".into());
         }
     }
@@ -293,12 +277,67 @@ pub fn publication(root: &Path) -> Result<Publication> {
         .into(),
     })
 }
+fn publication_section(current: &str, tagged: Option<&str>, version: &str) -> Result<String> {
+    extract(tagged.unwrap_or(current), version)
+}
+fn formatted_publication_section(
+    current: &str,
+    prepared: &Prepared,
+    version: &str,
+) -> Result<String> {
+    if !prepared.formatted_published_notes
+        || prepared.generator.as_deref() != Some(GENERATOR)
+        || prepared.version != version
+    {
+        return Err(
+            "Published-note formatting requires an explicit matching Cocogitto receipt".into(),
+        );
+    }
+    let notes = extract(current, version)?;
+    if digest(&notes) != prepared.notes_sha256 {
+        return Err("Formatted published notes differ from their reviewed receipt".into());
+    }
+    Ok(notes)
+}
+pub fn publication_notes(root: &Path, version: &str) -> Result<String> {
+    if let Some(prepared) = read_prepared(root)?
+        && prepared.formatted_published_notes
+    {
+        let tag = format!("v{version}");
+        output(
+            root,
+            "git",
+            &["rev-parse", "--verify", &format!("refs/tags/{tag}")],
+        )?;
+        validate_prepared(root, &prepared, version, &tag)?;
+        return formatted_publication_section(
+            &fs::read_to_string(root.join("CHANGELOG.md"))?,
+            &prepared,
+            version,
+        );
+    }
+    if output(
+        root,
+        "git",
+        &["rev-parse", "--verify", &format!("refs/tags/v{version}")],
+    )
+    .is_ok()
+    {
+        let tagged = output(root, "git", &["show", &format!("v{version}:CHANGELOG.md")])?;
+        return publication_section("", Some(&tagged), version);
+    }
+    publication_section(
+        &fs::read_to_string(root.join("CHANGELOG.md"))?,
+        None,
+        version,
+    )
+}
 pub fn verify_artifact(root: &Path, event: &serde_json::Value) -> Result<()> {
     let current = version(root)?;
     if event["release"]["tag_name"].as_str() != Some(format!("v{current}").as_str()) {
         return Err("Artifact event tag does not match workspace version".into());
     }
-    let notes = extract(&fs::read_to_string(root.join("CHANGELOG.md"))?, &current)?;
+    let notes = publication_notes(root, &current)?;
     let body = event["release"]["body"]
         .as_str()
         .ok_or("Release event body is missing")?
@@ -316,7 +355,6 @@ pub fn example() -> Result<String> {
     commit.author = Signature {
         name: Some("Example Contributor".into()),
         timestamp: 1_700_000_000,
-        ..Default::default()
     };
     let cliff = generated(
         config(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())?,
@@ -355,6 +393,12 @@ fn bounds(text: &str, version: &str) -> Result<Option<(usize, usize, usize)>> {
     let mut found = None;
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
+        if line.starts_with("Changelog generated by")
+            && let Some((_, _, end)) = found.as_mut()
+            && *end == text.len()
+        {
+            *end = offset;
+        }
         if let Some(title) = line.trim_end().strip_prefix("## ") {
             if let Some((_, _, end)) = found.as_mut()
                 && *end == text.len()
@@ -365,7 +409,10 @@ fn bounds(text: &str, version: &str) -> Result<Option<(usize, usize, usize)>> {
                 .split_whitespace()
                 .next()
                 .unwrap_or("")
-                .trim_matches(['[', ']']);
+                .trim_start_matches('[')
+                .split(']')
+                .next()
+                .unwrap_or("");
             if heading.trim_start_matches('v') == version {
                 if found.is_some() {
                     return Err(format!("Duplicate changelog section {version}").into());
@@ -382,7 +429,13 @@ pub fn extract(text: &str, version: &str) -> Result<String> {
     let (_, start, end) =
         bounds(text, version)?.ok_or_else(|| format!("Missing changelog section {version}"))?;
     let normalized = text[start..end].replace("\r\n", "\n");
-    let body = normalized.trim();
+    let body = normalized
+        .split("Changelog generated by")
+        .next()
+        .unwrap()
+        .trim_end()
+        .trim_end_matches("- - -")
+        .trim();
     let lower = body.to_ascii_lowercase();
     if body.split_whitespace().count() < 3
         || !body.lines().any(|line| line.starts_with("- "))
@@ -435,14 +488,19 @@ pub fn apply(root: &Path, plan: &Plan) -> Result<()> {
     let text = fs::read_to_string(&path)?;
     let updated = if let Some((start, _, end)) = bounds(&text, &plan.version)? {
         format!(
-            "{}{}{}",
+            "{}{}\n- - -\n\n{}",
             &text[..start],
             plan.changelog_section,
             &text[end..]
         )
     } else {
         let at = text.find("\n## ").map(|n| n + 1).unwrap_or(text.len());
-        format!("{}{}{}", &text[..at], plan.changelog_section, &text[at..])
+        format!(
+            "{}{}\n- - -\n\n{}",
+            &text[..at],
+            plan.changelog_section,
+            &text[at..]
+        )
     };
     fs::write(path, updated)?;
     fs::write(
@@ -455,7 +513,7 @@ pub fn apply(root: &Path, plan: &Plan) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn package(base: &str, messages: &[&str]) -> Changelog<'static> {
+    fn package(base: &str, messages: &[&str]) -> Generated {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         generated(
             config(root).unwrap(),
@@ -468,7 +526,6 @@ mod tests {
                     c.author = Signature {
                         name: Some("Fixture Author".into()),
                         timestamp: 1_700_000_000,
-                        ..Default::default()
                     };
                     c
                 })
@@ -478,7 +535,7 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn git_cliff_calculates_explicit_feature_breaking_and_maintenance_policy() {
+    fn cocogitto_calculates_explicit_feature_breaking_and_maintenance_policy() {
         for (base, message, expected) in [
             ("v0.6.0", "fix: retain cache", "0.6.1"),
             ("v0.6.0", "perf: bound queue", "0.6.1"),
@@ -545,23 +602,22 @@ mod tests {
         );
         let (_, text) = render(&cliff).unwrap();
         for group in [
-            "Fixes",
-            "Documentation",
-            "Tests",
-            "Build",
-            "CI",
-            "Refactors",
-            "Performance",
-            "Chore",
-            "Contributors",
+            "🐛 Bug Fixes",
+            "📚 Documentation",
+            "🧪 Testing",
+            "📦 Build",
+            "🤖 Continuous Integration",
+            "🚜 Refactoring",
+            "⚡ Performance",
+            "⚙️ Miscellaneous",
         ] {
-            assert!(text.contains(&format!("### {group}")), "{text}");
+            assert!(text.contains(&format!("#### {group}")), "{text}");
         }
         assert!(!text.contains("KIT-13"));
         assert!(!text.contains("update version"));
         assert!(!text.contains("### Enhancements"));
-        assert!(text.contains("/compare/v0.6.0...v0.6.1"));
-        assert!(text.contains("/pull/12"));
+        assert!(text.contains("/compare/v0.6.0..v0.6.1"));
+        assert!(text.contains("(#12)"));
         assert!(text.contains("/commit/"));
         assert!(
             package("v0.6.0", &["ci(release): update version", "not semantic"])
@@ -584,7 +640,7 @@ mod tests {
         .unwrap();
         assert_eq!(version, "0.7.0");
         assert_eq!(first, second);
-        assert!(first.contains("### Breaking Changes"));
+        assert!(first.contains("**BREAKING CHANGE**:"));
         assert!(first.contains("Fixture Author"));
         let more = package("v0.6.0", &["feat!: change root", "fix: retain originals"]);
         assert_eq!(render(&more).unwrap().0, "0.7.0");
@@ -618,6 +674,7 @@ mod tests {
             notes: notes.clone(),
             changelog_section: section,
             prepared: Prepared {
+                formatted_published_notes: false,
                 base_tag: "v0.6.0".into(),
                 version: version.clone(),
                 commits: vec!["source".into()],
@@ -666,5 +723,51 @@ mod tests {
         assert!(verify_artifact(root, &event).is_err());
         event["release"]["tag_name"] = serde_json::json!("v0.8.0");
         assert!(verify_artifact(root, &event).is_err());
+    }
+    #[test]
+    fn tagged_notes_survive_a_local_format_migration() {
+        let original = "## v0.7.0\n- Original reviewed release description.\n";
+        let migrated = "## [v0.7.0](https://example.test) - 2026-10-24\n#### Features\n- Reformatted local description.\n";
+        let expected = extract(original, "0.7.0").unwrap();
+        assert_eq!(
+            publication_section(migrated, Some(original), "0.7.0").unwrap(),
+            expected
+        );
+        assert_ne!(
+            publication_section(migrated, None, "0.7.0").unwrap(),
+            expected
+        );
+        assert!(publication_section(migrated, Some(original), "0.8.0").is_err());
+    }
+    #[test]
+    fn published_formatting_requires_the_explicit_exact_version_and_digest_receipt() {
+        let current = "## v0.7.0\n- Reviewed Cocogitto formatting.\n";
+        let mut prepared = Prepared {
+            formatted_published_notes: true,
+            base_tag: "v0.6.0".into(),
+            version: "0.7.0".into(),
+            commits: vec![],
+            source_head: None,
+            generator: Some(GENERATOR.into()),
+            notes_sha256: digest(&extract(current, "0.7.0").unwrap()),
+        };
+        assert_eq!(
+            formatted_publication_section(current, &prepared, "0.7.0").unwrap(),
+            extract(current, "0.7.0").unwrap()
+        );
+        assert!(formatted_publication_section(current, &prepared, "0.8.0").is_err());
+        prepared.formatted_published_notes = false;
+        assert!(formatted_publication_section(current, &prepared, "0.7.0").is_err());
+        prepared.formatted_published_notes = true;
+        prepared.notes_sha256 = "changed".into();
+        assert!(formatted_publication_section(current, &prepared, "0.7.0").is_err());
+    }
+    #[test]
+    fn cocogitto_section_excludes_older_versions_and_footer() {
+        let document = "# Changelog\n\n- - -\n\n## [v0.7.0](https://example.test) - 2026-10-24\n\n#### Features\n- Current public behavior.\n\n- - -\n\n## v0.6.0 - 2026-10-21\n- Historical public behavior.\n\n- - -\n\nChangelog generated by [cocogitto](https://github.com/cocogitto/cocogitto).\n";
+        assert_eq!(
+            extract(document, "0.7.0").unwrap(),
+            "#### Features\n- Current public behavior.\n"
+        );
     }
 }

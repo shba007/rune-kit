@@ -32,7 +32,7 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "RELEASE_READY=$READY" >> "$GITHUB_ENV"
           if [ "$READY" = true ]; then
-            cargo xtask release-notes "$VERSION" --output target/release-notes.md
+            cargo xtask release-notes "$VERSION" --publication --output target/release-notes.md
           else
             jq -r .reason target/release-check.json
           fi

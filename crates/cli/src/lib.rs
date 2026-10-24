@@ -62,18 +62,6 @@ pub enum Commands {
         #[arg(long)]
         timeout: Option<u64>,
     },
-    /// Inspect installed plugins and run local discovery probes (not a Studio monitor)
-    Tui {
-        /// Print one inventory snapshot instead of entering the terminal UI
-        #[arg(long)]
-        once: bool,
-        /// Show only tools declared read-only in this dashboard's probes
-        #[arg(long)]
-        read_only: bool,
-        /// Parameters for this dashboard's probes, e.g. -p allowed_dir=/workspace
-        #[arg(short, long, value_parser = parse_key_val)]
-        param: Vec<(String, String)>,
-    },
     /// Install an artifact from registry, URL, or local path
     Install {
         target: String,
@@ -146,19 +134,10 @@ use rune_kit_core::{
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     rune_kit_core::paths::managed_root()?;
-    if let Commands::Tui {
-        once,
-        read_only,
-        param,
-    } = &cli.command
-    {
-        return tui::run(*once || cli.json, cli.json, *read_only, param.clone());
-    }
     let pm = PackageManager::new();
     let sm = SkillManager::new();
 
     match cli.command {
-        Commands::Tui { .. } => unreachable!(),
         Commands::Run { .. } => return Err("Public stdio serving was removed. Use `rune-kit serve --headless` and connect to http://127.0.0.1:47601/mcp (MCP HTTP 2026-07-28; Kit 0.6.0+).".into()),
         Commands::Serve {
             plugin,
@@ -203,6 +182,17 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ExecutionKind::Native => PluginInstance::load_native_from_file(&target,path,params),
                 }.map_err(|e|format!("Cannot load plugin {target}: {e}. Repair its installation or select a working plugin explicitly."))?;
                 loaded.push(format!("{target} {version}: loaded ({kind:?}); discovery pending"));
+                if let Some(manifest) = lockfile.plugins.get(&target).and_then(|entry| entry.manifest.as_ref()) {
+                    for dependency in manifest.dependencies.binaries.keys() {
+                        let directory = metadata_path.parent().unwrap().join("_bin").join(dependency);
+                        let verified = std::fs::read_dir(directory).is_ok_and(|entries| entries.flatten().any(|entry|
+                            entry.path().join(".verified").is_file() && (entry.path().join(dependency).is_file()
+                                || entry.path().join(format!("{dependency}.exe")).is_file())));
+                        if !verified {
+                            loaded.push(format!("{target}: dependency {dependency} is not verified locally. Reinstall {target} to provision it; optional dependencies may be unused."));
+                        }
+                    }
+                }
                 router.register(target,instance);
             }
             server::serve(router,server::Options {bind,port,headless,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}).await?;

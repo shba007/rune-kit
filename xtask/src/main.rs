@@ -1,3 +1,4 @@
+mod cocogitto;
 mod release;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,10 +34,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let version = args
                 .get(1)
                 .ok_or("Usage: cargo xtask release-notes VERSION [--output PATH]")?;
-            let notes = release::extract(
-                &std::fs::read_to_string(root.join("CHANGELOG.md"))?,
-                version,
-            )?;
+            let notes = if args.iter().any(|a| a == "--publication") {
+                release::publication_notes(root, version)?
+            } else {
+                release::extract(
+                    &std::fs::read_to_string(root.join("CHANGELOG.md"))?,
+                    version,
+                )?
+            };
             if let Some(at) = args.iter().position(|a| a == "--output") {
                 std::fs::write(args.get(at + 1).ok_or("Missing output path")?, notes)?;
             } else {

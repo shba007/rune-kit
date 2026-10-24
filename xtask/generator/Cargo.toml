@@ -1,0 +1,17 @@
+[package]
+name = "rune-cocogitto-generator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Cocogitto's stderrlog pins termcolor ~1.1; Kit's Wasmtime needs ^1.2.
+# Isolate release-only dependencies instead of patching either upstream crate.
+[workspace]
+
+[dependencies]
+cocogitto = "=7.0.0"
+conventional_commit_parser = "=0.9.4"
+chrono = "0.4"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

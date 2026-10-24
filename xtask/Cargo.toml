@@ -1,4 +1,5 @@
 [package]
+default-run = "xtask"
 name = "xtask"
 version = "0.1.0"
 edition.workspace = true
@@ -6,7 +7,6 @@ publish = false
 
 [dependencies]
 reqwest = { workspace = true, features = ["blocking"] }
-git-cliff-core = { version = "=2.14.2", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -16,3 +16,7 @@ zip.workspace = true
 toml_edit = "0.25"
 semver = "1"
 tempfile = "3"
+
+[[bin]]
+name = "render-notes"
+path = "src/render_notes.rs"
