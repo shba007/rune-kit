@@ -23,13 +23,14 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2.87.28
-        with:
-          tool: cocogitto@7.0.0
       - name: Verify owner-promoted release matches prepared history and notes
         run: |
           test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required to publish a release that triggers artifact publication.' >&2; exit 1; }
           mkdir -p target
+          VERSION=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
+          SUBJECT=$(git log -1 --format=%s)
+          test "$SUBJECT" = "ci(release): publish v$VERSION" || { echo "Main promotion must use merge title ci(release): publish v$VERSION" >&2; exit 1; }
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 || { echo 'Promote develop using a merge commit, not squash/rebase.' >&2; exit 1; }
           cargo xtask release-check > target/release-check.json
           VERSION=$(jq -r .version target/release-check.json)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"

@@ -34,7 +34,7 @@
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │             McpRouter (protocol.rs)                    │  │
-│  │  • Single JSON-RPC stdio transport front door          │  │
+│  │  • Single MCP Streamable HTTP endpoint          │  │
 │  │  • Unified dispatch for tools, resources, and prompts  │  │
 │  └──────────────┬───────────────────────────┬─────────────┘  │
 │                 │                           │                │
@@ -42,7 +42,7 @@
 │  ┌────────────────────────────┐ ┌─────────────────────────┐  │
 │  │     WasmPluginInstance     │ │      NativeSidecar      │  │
 │  │  • Extism/Wasmtime sandbox │ │  (Standalone Execution) │  │
-│  │  • Capabilities gate       │ │  • Direct stdio MCP     │  │
+│  │  • Capabilities gate       │ │  • Private native JSON-RPC     │  │
 │  └──────────────┬─────────────┘ │  • Deep OS/C-FFI access │  │
 │                 │ Host Bridge   └─────────────────────────┘  │
 │                 ▼                                            │
@@ -90,7 +90,7 @@ pub enum PluginInstance {
 ### 2.2 Dispatch via `McpRouter`
 
 All external client MCP interactions route through `McpRouter` (`crates/core/src/protocol.rs`):
-- Single JSON-RPC stdio transport front door for clients.
+- Single MCP Streamable HTTP endpoint for clients.
 - Dispatches across registered plugin instances (`PluginInstance::Wasm` and `PluginInstance::Native`) for all six core MCP methods:
   - `tools/list` & `tools/call` (namespaced via `<namespace>__<tool_name>`)
   - `resources/list` & `resources/read` (namespaced via `rune://<namespace>/<plugin-local-uri>`)
@@ -225,7 +225,7 @@ During `rune-kit install <target>`:
 
 ### 6.2 MCP Request Execution Flow
 
-1. The client issues a JSON-RPC request over stdio (`tools/*`, `resources/*`, or `prompts/*`).
+1. The client posts a JSON-RPC request over MCP Streamable HTTP (`tools/*`, `resources/*`, or `prompts/*`).
 2. `McpRouter` decodes the namespace prefix and routes the call to the corresponding `PluginInstance`:
    - **WASM Route:** Invokes guest exports (`mcp_call_tool`, `mcp_read_resource`, `mcp_get_prompt`). If native work is required, WASM dispatches to the companion binary via `host_sidecar_exec`.
    - **Native Route:** Sends JSON-RPC commands directly over stdio pipes to the running standalone `NativeSidecar` process and reads output lines.
@@ -272,8 +272,20 @@ Agents implement/test locally and leave every change unstaged and uncommitted. D
 
 GitHub Actions is authorized to calculate versions, update manifests/lockfiles/changelogs, commit/push the dedicated release/update-version branch, and open/update its single PR targeting develop. Successful checks precede preparation. The PR title and automation commit are `ci(release): update version`. Actions publishes tags/releases/artifacts only after the owner promotes the prepared release to main. No AI service belongs in this flow.
 
-See docs/RELEASING.md for the complete develop-to-main sequence, authentication, merge strategy, and Rust dry-run commands. Promotion to main must preserve commit ancestry (merge commit or fast-forward; no squash/rebase). Merging preparation into develop alone does not publish. Main publication is guarded by preparation metadata rather than a commit-message marker.
+See docs/RELEASING.md for the complete develop-to-main sequence, authentication, merge strategy, and Rust dry-run commands. Promotion to main must use a merge commit preserving ancestry (no squash/rebase), with title `ci(release): publish vX.Y.Z`. Merging preparation into develop alone does not publish. Main publication is guarded by preparation metadata rather than a commit-message marker.
 
 Prefer Rust for repository utilities and protocol/installer test harnesses. Bootstrap install.ps1/install.sh remain thin and require no end-user Rust installation. Public change descriptions must contain substantive user-facing behavior, compatibility and migration; exclude internal planning labels and bot bookkeeping. Publication extracts the exact version section generated during preparation and never rewrites published history.
 
-The TUI is explicit (`rune-kit tui`), observes only installed inventory and its own local discovery, and must never start during MCP stdio operation. Do not invent live health, usage, request history or visibility into Studio's gateway.
+`rune-kit serve` is the only supported public serving command. MCP 2026-07-28
+Streamable HTTP uses http://127.0.0.1:47601/mcp by default. Interactive serve starts
+an attached TUI with only this server's observed state; --headless/non-interactive
+serving needs no terminal. Legacy run fails with migration guidance. Native
+plugin pipes and WASM exports remain private ABI. Standalone tui is inventory only.
+Never display secrets or full arguments, or infer status for a separate process.
+
+Only develop pushes trigger integration/preparation, including merge/release
+commits; PR events and release branch pushes do not. Validate generated release
+files in the preparation run. Use GITHUB_TOKEN for PR API operations, GH_TOKEN
+for release branch pushes and publication events. The Rust release utility uses
+git-conventional, semver and toml_edit; valid semantic maintenance/custom commits
+are releasable too. No AI service generates release prose. See docs/RELEASING.md.

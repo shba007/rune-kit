@@ -20,9 +20,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: rustfmt, clippy
-      - uses: taiki-e/install-action@v2.87.28
-        with:
-          tool: cocogitto@7.0.0
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
         env:
@@ -34,6 +31,3 @@ jobs:
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
           cargo xtask release-notes "$VERSION"
-      - name: Validate the release preparation PR
-        if: github.event_name == 'pull_request' && github.head_ref == 'release/update-version'
-        run: cargo xtask release-check

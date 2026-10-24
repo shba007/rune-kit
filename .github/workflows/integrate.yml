@@ -2,8 +2,6 @@ name: Rust CI
 on:
   push:
     branches: [develop]
-  pull_request:
-    branches: [develop, main]
 permissions:
   contents: read
 jobs:
@@ -24,7 +22,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
       - name: Require event-capable authentication
-        run: test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required (contents and pull requests write); the built-in token does not trigger PR validation.' >&2; exit 1; }
+        run: test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required (contents write); PR API operations use the built-in token.' >&2; exit 1; }
       - uses: actions/checkout@v7
         with:
           ref: develop
@@ -41,10 +39,6 @@ jobs:
           fi
       - uses: dtolnay/rust-toolchain@stable
         if: steps.revision.outputs.current == 'true'
-      - uses: taiki-e/install-action@v2.87.28
-        if: steps.revision.outputs.current == 'true'
-        with:
-          tool: cocogitto@7.0.0
       - name: Prepare deterministic release files
         if: steps.revision.outputs.current == 'true'
         id: plan
@@ -55,13 +49,27 @@ jobs:
           VERSION=$(jq -r .version target/release-plan.json)
           if [ "$(jq -r .needed target/release-plan.json)" = true ]; then
             cargo metadata --locked --no-deps --format-version 1 > /dev/null
+            cargo xtask release-check
+            cargo test --locked -p xtask
             cargo xtask release-notes "$VERSION" --output target/release-body.md
           fi
-      - name: Open or update the single preparation PR
+      - name: Check development has not advanced during preparation
+        id: freshness
         if: steps.plan.outputs.needed == 'true'
+        run: |
+          CURRENT=$(git ls-remote origin refs/heads/develop | cut -f1)
+          if [ "$CURRENT" = "$GITHUB_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'New development is waiting for its own validated preparation.'
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open or update the single preparation PR
+        if: steps.plan.outputs.needed == 'true' && steps.freshness.outputs.current == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ github.token }}
+          branch-token: ${{ secrets.GH_TOKEN }}
           branch: release/update-version
           base: develop
           delete-branch: true

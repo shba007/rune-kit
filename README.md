@@ -14,7 +14,7 @@
 
 ---
 
-Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`per-request protocolVersion: 2026-07-28`). It ships as a single CLI binary (`rune-kit`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a single stdio front door.
+Rune Kit is a Rust runtime host and package manager for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io) specification (`per-request protocolVersion: 2026-07-28`). It ships as a single CLI binary (`rune-kit`) and a modular core library (`rune-kit-core`) designed to run, supervise, and multiplex MCP plugins across WebAssembly sandboxes and direct OS native processes through a persistent local Streamable HTTP endpoint.
 
 In addition to executable plugins, Rune Kit natively manages declarative content artifacts called **Skills** (instruction sets, system prompts, reference packages), and features a host-managed external binary provisioning engine that automatically fetches, verifies, and configures standalone CLI utilities (such as `ffmpeg` or `yt-dlp`) on clean machines without requiring third-party package managers.
 
@@ -23,7 +23,7 @@ See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibilit
 ### Features
 
 - ⚡ **Dual Execution Model:** Run sandboxed WebAssembly guest modules (`wasm32-wasip1`) via Extism/Wasmtime, or execute standalone native binaries communicating over JSON-RPC stdio.
-- 🌐 **Unified MCP Router:** Multiplex tools (`<namespace>__<tool>`), resources (`rune://<namespace>/<uri>`), and prompts across multiple plugins into a single stdio gateway.
+- 🌐 **Unified MCP Router:** Multiplex tools (`<namespace>__<tool>`), resources (`rune://<namespace>/<uri>`), and prompts across multiple plugins into one HTTP MCP server.
 - 📦 **Two-Tier Artifact Management:** Manage executable code plugins (`installed.json`) alongside declarative content skills (`installed_skills.json`) with automated dependency resolution.
 - 🛠️ **Host-Managed Binary Engine:** Auto-download, SHA-256 verify, unpack, and inject external CLI utilities (`_bin/<name>/<version>/`) into plugin execution environments.
 - 🔒 **Fine-Grained Capabilities:** Restrict network egress (`allowed_hosts`), sandbox filesystem access (`allowed_dir`), and allowlist external binary execution via declarative manifests (`plugin.toml`).
@@ -37,11 +37,11 @@ See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibilit
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MCP Client (Cursor, Claude, etc.)            │
 └────────────────────────────────┬────────────────────────────────┘
-                                 │ JSON-RPC (stdio)
+                                 │ MCP Streamable HTTP
                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     McpRouter (protocol.rs)                     │
-│  • Single JSON-RPC stdio transport front door                   │
+│  • Local MCP HTTP endpoint /mcp                   │
 │  • Tools: <namespace>__<tool_name>                              │
 │  • Resources: rune://<namespace>/<uri>                          │
 │  • Prompts: <namespace>__<prompt_name>                          │
@@ -113,7 +113,7 @@ install `rune-kit` in `~/rune`; the script adds the root once to `~/.profile` (s
 Re-running installs the selected release again. Downloads are verified before an
 existing executable is replaced. Stop active gateways before upgrading on Windows.
 
-Override `RUNE_KIT_VERSION` (for example `v0.5.0`), `RUNE_KIT_INSTALL_DIR`, or
+Override `RUNE_KIT_VERSION` with an existing release tag, `RUNE_KIT_INSTALL_DIR`, or
 `RUNE_KIT_BASE_URL` (release-download URL or local mirror directory). A mirror
 requires an explicit version and an archive plus its `.sha256` file. On Windows,
 `RUNE_KIT_NO_MODIFY_PATH=1` leaves both user and session PATH unchanged.
@@ -121,7 +121,7 @@ requires an explicit version and an archive plus its `.sha256` file. On Windows,
 For example, to pin a version in PowerShell:
 
 ```powershell
-$env:RUNE_KIT_VERSION = 'v0.5.0'
+$env:RUNE_KIT_VERSION = 'v0.6.0' # HTTP release; use only after it is published
 # Run the installer after it is published.
 ```
 
@@ -135,7 +135,7 @@ terminals/clients after installing. No `rune` alias is installed and unrelated o
 executables are not deleted. Plugin, skill and cache data use the
 `~/rune/tools` folder. Legacy managed storage is copied on first use; originals remain available for recovery. Old installs can be removed
 manually after clients have switched. Self-update accepts both old and new archive
-binary names. Clients using initialization must migrate to the MCP 2026-07-28 request format before upgrading to 0.5.0.
+binary names. HTTP clients need the planned 0.6.0+ release and the Streamable HTTP request contract below; the published 0.5.0 stdio release is not HTTP-compatible.
 
 ### Prebuilt Binaries
 
@@ -176,7 +176,7 @@ rune-kit --version
 Usage: rune-kit <COMMAND>
 
 Commands:
-  run          Start the MCP server gateway over stdio
+  serve        Start the local MCP HTTP server and attached TUI
   tui          Inspect installed plugins and run local discovery probes
   install      Install an artifact from registry, URL, or local path
   uninstall    Uninstall an installed artifact (plugin or skill)
@@ -188,40 +188,36 @@ Commands:
   help         Print this message or the help of the given subcommand(s)
 ```
 
-### 1. `rune-kit run`
+### 1. `rune-kit serve`
 
-Starts the MCP server gateway over stdio. Dispatches JSON-RPC requests across one or all registered plugins.
+Start a persistent server at **http://127.0.0.1:47601/mcp**. With an interactive
+terminal, the existing Rust TUI attaches to this server's live state. Non-interactive
+launches run without terminal control sequences; use `--headless` explicitly in CI.
 
 ```bash
-# Run a single plugin by installed name
-rune-kit run git
-
-# Run a local plugin directly (file extension determines runtime: .wasm -> WASM, other -> Native)
-rune-kit run ./dist/my-plugin.wasm
-rune-kit run ./dist/native-worker.exe
-
-# Gateway Mode: Serve all installed plugins simultaneously under namespaced identifiers
-rune-kit run --all
-
-# Inject key-value parameters passed to the plugin runtime
-rune-kit run git -p allowed_dir=/workspace -p default_branch=main
+rune-kit serve --read-only
+rune-kit serve git --headless --read-only
+rune-kit serve ./dist/my-plugin.wasm --headless --port 47602
+rune-kit serve --read-only -p allowed_dir=/absolute/workspace
 ```
 
-#### Flags & Options
+By default all installed plugins are loaded; an optional name/artifact selects
+one. `--all` is an explicit synonym for the default and cannot accompany a plugin.
+`--allow-tool name__operation` is a server permission ceiling. Clients may narrow
+that ceiling through request metadata but cannot change configuration or roots.
+`--timeout` defaults to 30 seconds. Only loopback `--bind` addresses are accepted.
+Set `RUNE_KIT_HTTP_TOKEN` to require a local bearer token; no token is printed.
+Press q/Esc/Ctrl+C in the dashboard, or Ctrl+C headlessly, for graceful shutdown.
+Occupied ports and broken installations fail with actionable errors.
 
-| Flag | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `[PLUGIN]` | `String` (positional) | `None` | Specific plugin name or local file path to run. |
-| `--all` | `bool` | `false` | Run all installed plugins simultaneously in gateway mode. |
-| `-p`, `--param <KEY=VALUE>` | `Vec<String>` | `[]` | Injected key-value parameter passed to plugin configuration and environment. Repeatable. |
-| `-h`, `--help` | `bool` | `false` | Print help information. |
-
-> [!NOTE]
-> Either `[PLUGIN]` or `--all` must be provided. If neither is specified, `rune-kit run` exits with code `1`.
+**Breaking migration (first planned HTTP release: 0.6.0):** `rune-kit run` no longer
+serves public stdio. It exits with HTTP migration guidance. Studio must connect
+to the endpoint, not spawn a subprocess. Existing native plugin pipes remain
+private and unchanged. See [HTTP contract and fixtures](docs/MCP-CONTRACT.md).
 
 #### Environment Variable Parameter Injection
 
-In addition to `-p KEY=VALUE`, `rune-kit run` automatically inspects the host environment and forwards parameters into the plugin context:
+In addition to `-p KEY=VALUE`, `rune-kit serve` automatically inspects the host environment and forwards parameters into the plugin context:
 1. **Prefixed Variables:** Any variable starting with `RUNE_PARAM_<NAME>` has the prefix stripped and the remaining key lowercased (e.g. `RUNE_PARAM_API_KEY=xyz` becomes `api_key=xyz`).
 2. **Allowlisted System Variables:** The following host environment variables are forwarded automatically (lowercased): `ALLOWED_DIR`, `OUTPUT_DIR`, `OUTPUT_DIRECTORY`, `COOKIES_DIR`, `COOKIES_FILE`, `DEFAULT_TIMEZONE`, `REPO_PATH`, `MEMORY_FILE`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`.
 
@@ -409,7 +405,8 @@ serde_json = "1.0"
 
 ### 1. Hosting an MCP Gateway over Stdio
 
-Load WASM or native plugin instances and route MCP traffic:
+Load WASM/native instances for embedded dispatch. Use `rune-kit serve` for the
+supported public HTTP transport; this library example does not start a server:
 
 ```rust
 use rune_kit_core::{McpRouter, PluginInstance};
@@ -437,8 +434,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     router.register("desktop".to_string(), native_plugin);
 
-    // Start synchronous stdio JSON-RPC loop (blocks until EOF on stdin)
-    router.run_stdio()?;
+    // One embedded dispatch, not a public stdio serving loop.
+    let request = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    let discovery = router.handle_jsonrpc(request).ok_or("No discovery response")?;
+    println!("{discovery}");
     Ok(())
 }
 ```
@@ -580,7 +579,10 @@ Managed storage defaults to `~/rune/tools` (plugins in `plugins/`). Set an absol
 
 ## Terminal inventory
 
-Run `rune-kit tui` to inspect installed plugins, real local discovery, capabilities and diagnostics. Use arrows/j/k, Tab, PgUp/PgDn, r to refresh and q to quit. `rune-kit tui --once` and `rune-kit tui --json` work without an interactive terminal. The dashboard does not monitor Studio's gateway and never starts during MCP stdio. See [dashboard controls and boundaries](docs/TUI.md).
+Run `rune-kit serve` for the attached HTTP server dashboard (endpoint, uptime,
+loaded/discovered plugins, active/recent requests and restrictions). Use arrows,
+r and q. `rune-kit tui --once` / `--json` remain standalone inventory commands;
+they do not monitor another process. See [dashboard controls](docs/TUI.md).
 
 ## Releases and contributor tooling
 

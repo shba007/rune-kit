@@ -1,7 +1,6 @@
 use crate::runtime::{PluginInstance, RuntimeError};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,9 +18,28 @@ pub struct CancelState {
     pub wasm_handle: Option<extism::CancelHandle>,
 }
 
+// Holds only the currently executing instance, never unrelated idle WASM guests.
+struct WasmOperation(Arc<Mutex<Option<extism::CancelHandle>>>);
+impl WasmOperation {
+    fn track(instance: &PluginInstance, slot: Arc<Mutex<Option<extism::CancelHandle>>>) -> Self {
+        *slot.lock().unwrap() = match instance {
+            PluginInstance::Wasm(w) => Some(w.get_cancel_handle()),
+            _ => None,
+        };
+        Self(slot)
+    }
+}
+impl Drop for WasmOperation {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
 pub struct McpRouter {
     instances: HashMap<String, PluginInstance>,
     config: RouterConfig,
+    request_cancel: Arc<AtomicBool>,
+    wasm_operation: Arc<Mutex<Option<extism::CancelHandle>>>,
     active_cancels: Arc<Mutex<HashMap<String, CancelState>>>,
     cancelled_ids: Arc<Mutex<HashSet<String>>>,
 }
@@ -79,6 +97,8 @@ impl McpRouter {
         Self {
             instances: HashMap::new(),
             config: RouterConfig::default(),
+            request_cancel: Arc::new(AtomicBool::new(false)),
+            wasm_operation: Arc::new(Mutex::new(None)),
             active_cancels: Arc::new(Mutex::new(HashMap::new())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -88,6 +108,8 @@ impl McpRouter {
         Self {
             instances: HashMap::new(),
             config,
+            request_cancel: Arc::new(AtomicBool::new(false)),
+            wasm_operation: Arc::new(Mutex::new(None)),
             active_cancels: Arc::new(Mutex::new(HashMap::new())),
             cancelled_ids: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -122,7 +144,64 @@ impl McpRouter {
         }
     }
 
-    /// Public MCP stdio boundary. Plugin calls retain their private ABI.
+    /// The HTTP worker serializes instances. Only this operation's disconnect flag
+    /// can interrupt its native process or WASM execution; client IDs are not keys.
+    pub fn handle_cancellable(&mut self, request: &str, cancel: Arc<AtomicBool>) -> Option<Value> {
+        let operation_cancel = Arc::new(AtomicBool::new(false));
+        self.request_cancel = operation_cancel.clone();
+        let expired = Arc::new(AtomicBool::new(false));
+        let timed_out = expired.clone();
+        let timeout = self.config.tool_timeout_secs.unwrap_or(30);
+        let started = std::time::Instant::now();
+        for instance in self.instances.values_mut() {
+            if let PluginInstance::Native(native) = instance {
+                native.set_operation_context(
+                    operation_cancel.clone(),
+                    Some(Duration::from_secs(timeout)),
+                );
+            }
+        }
+        let active_wasm = self.wasm_operation.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let watcher = std::thread::spawn(move || {
+            loop {
+                if cancel.load(Ordering::Relaxed)
+                    || started.elapsed() >= Duration::from_secs(timeout)
+                {
+                    timed_out.store(!cancel.load(Ordering::Relaxed), Ordering::Relaxed);
+                    operation_cancel.store(true, Ordering::Relaxed);
+                    if let Some(handle) = active_wasm.lock().unwrap().as_ref() {
+                        let _ = handle.cancel();
+                    }
+                    break;
+                }
+                if !matches!(
+                    done_rx.recv_timeout(Duration::from_millis(20)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    break;
+                }
+            }
+        });
+        let result = self.handle_jsonrpc(request);
+        let _ = done_tx.send(());
+        let _ = watcher.join();
+        self.request_cancel = Arc::new(AtomicBool::new(false));
+        for instance in self.instances.values_mut() {
+            if let PluginInstance::Native(native) = instance {
+                native.set_operation_context(self.request_cancel.clone(), None);
+            }
+        }
+        if expired.load(Ordering::Relaxed) {
+            let request: Value = serde_json::from_str(request).unwrap_or(Value::Null);
+            return Some(
+                json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":format!("Request execution timed out after {timeout} seconds")}}),
+            );
+        }
+        result
+    }
+
+    /// Transport-independent public MCP dispatch. Plugin calls retain their private ABI.
     pub fn handle_jsonrpc(&mut self, request_str: &str) -> Option<Value> {
         let req: Value = match serde_json::from_str(request_str) {
             Ok(value) => value,
@@ -307,7 +386,11 @@ impl McpRouter {
                 let mut all_tools = Vec::new();
                 let mut discovery_errors = Vec::new();
                 for (ns, instance) in self.instances.iter_mut() {
-                    match instance.list_tools() {
+                    let _operation = WasmOperation::track(instance, self.wasm_operation.clone());
+                    match instance.discover_tools(
+                        self.request_cancel.clone(),
+                        Duration::from_secs(self.config.tool_timeout_secs.unwrap_or(30)),
+                    ) {
                         Ok(tools) => {
                             for tool in tools {
                                 let full_name = format!("{}__{}", ns, tool.name);
@@ -400,6 +483,7 @@ impl McpRouter {
             "resources/list" => {
                 let mut all_resources = Vec::new();
                 for (ns, instance) in self.instances.iter_mut() {
+                    let _operation = WasmOperation::track(instance, self.wasm_operation.clone());
                     match instance.list_resources() {
                         Ok(resources) => {
                             for res in resources {
@@ -433,6 +517,7 @@ impl McpRouter {
             "prompts/list" => {
                 let mut all_prompts = Vec::new();
                 for (ns, instance) in self.instances.iter_mut() {
+                    let _operation = WasmOperation::track(instance, self.wasm_operation.clone());
                     match instance.list_prompts() {
                         Ok(prompts) => {
                             for prompt in prompts {
@@ -487,7 +572,12 @@ impl McpRouter {
                 // 2. Read-only profile enforcement
                 if self.config.read_only {
                     let is_read_only = if let Some(instance) = self.instances.get_mut(ns) {
-                        if let Ok(tools) = instance.list_tools() {
+                        let _operation =
+                            WasmOperation::track(instance, self.wasm_operation.clone());
+                        if let Ok(tools) = instance.discover_tools(
+                            self.request_cancel.clone(),
+                            Duration::from_secs(self.config.tool_timeout_secs.unwrap_or(30)),
+                        ) {
                             tools
                                 .iter()
                                 .find(|t| t.name == tool_name)
@@ -525,7 +615,11 @@ impl McpRouter {
                 }
 
                 if let Some(instance) = self.instances.get_mut(ns) {
-                    let tools = match instance.list_tools() {
+                    let _operation = WasmOperation::track(instance, self.wasm_operation.clone());
+                    let tools = match instance.discover_tools(
+                        self.request_cancel.clone(),
+                        Duration::from_secs(self.config.tool_timeout_secs.unwrap_or(30)),
+                    ) {
                         Ok(tools) => tools,
                         Err(error) => {
                             return Some(
@@ -551,7 +645,7 @@ impl McpRouter {
                             json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":format!("Invalid tool arguments: {error}")}]}}),
                         );
                     }
-                    let cancel_flag = Arc::new(AtomicBool::new(false));
+                    let cancel_flag = self.request_cancel.clone();
                     let wasm_handle = if let PluginInstance::Wasm(w) = instance {
                         Some(w.get_cancel_handle())
                     } else {
@@ -635,6 +729,8 @@ impl McpRouter {
                 match parse_resource_uri(uri) {
                     Some((ns, local_uri)) => match self.instances.get_mut(ns) {
                         Some(instance) => {
+                            let _operation =
+                                WasmOperation::track(instance, self.wasm_operation.clone());
                             if local_uri == "rules" {
                                 let rules_json = serde_json::to_string_pretty(&json!({
                                     "namespace": ns,
@@ -700,18 +796,22 @@ impl McpRouter {
 
                 let (ns, prompt_name) = (parts[0], parts[1]);
                 match self.instances.get_mut(ns) {
-                    Some(instance) => match instance.get_prompt(prompt_name, arguments) {
-                        Ok(res) => Some(json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": res
-                        })),
-                        Err(e) => Some(json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "error": { "code": -32000, "message": e.to_string() }
-                        })),
-                    },
+                    Some(instance) => {
+                        let _operation =
+                            WasmOperation::track(instance, self.wasm_operation.clone());
+                        match instance.get_prompt(prompt_name, arguments) {
+                            Ok(res) => Some(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": res
+                            })),
+                            Err(e) => Some(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": { "code": -32000, "message": e.to_string() }
+                            })),
+                        }
+                    }
                     None => Some(json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -725,106 +825,6 @@ impl McpRouter {
                 "error": { "code": -32601, "message": format!("Method '{}' not found", method) }
             })),
         }
-    }
-
-    pub async fn run_stdio(&mut self) -> Result<(), io::Error> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
-        let active_cancels = self.active_cancels.clone();
-        let cancelled_ids = self.cancelled_ids.clone();
-
-        let outstanding = Arc::new(Mutex::new(HashSet::new()));
-        let input_outstanding = outstanding.clone();
-        let stdin_thread = std::thread::spawn(move || {
-            let stdin = io::stdin();
-            for line in stdin.lock().lines() {
-                match line {
-                    Ok(l) => {
-                        // Intercept cancellation notification immediately on input thread
-                        if let Ok(val) = serde_json::from_str::<Value>(&l) {
-                            let method = val.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                            if val["jsonrpc"] == "2.0"
-                                && val.get("id").is_none()
-                                && (method == "notifications/cancelled"
-                                    || method == "$/cancelRequest")
-                            {
-                                let req_id = val
-                                    .get("params")
-                                    .and_then(|p| p.get("requestId").or_else(|| p.get("id")))
-                                    .map(|v| normalize_id(Some(v)))
-                                    .unwrap_or_default();
-                                if !req_id.is_empty() {
-                                    let mut cancelled = cancelled_ids.lock().unwrap();
-                                    if !input_outstanding.lock().unwrap().contains(&req_id) {
-                                        continue;
-                                    }
-                                    cancelled.insert(req_id.clone());
-                                    if let Some(state) = active_cancels.lock().unwrap().get(&req_id)
-                                    {
-                                        state.flag.store(true, Ordering::Relaxed);
-                                        if let Some(ref wasm) = state.wasm_handle {
-                                            let _ = wasm.cancel();
-                                        }
-                                    }
-                                }
-                                // Already applied on this thread; never enqueue cancellation twice.
-                                continue;
-                            }
-                        }
-
-                        if let Ok(value) = serde_json::from_str::<Value>(&l)
-                            && value.get("id").is_some()
-                            && value["method"].is_string()
-                        {
-                            input_outstanding
-                                .lock()
-                                .unwrap()
-                                .insert(normalize_id(value.get("id")));
-                        }
-                        if tx.blocking_send(l).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        let mut stdout = io::stdout();
-
-        while let Some(line) = rx.recv().await {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let response = self.handle_jsonrpc(trimmed);
-            let req_id = serde_json::from_str::<Value>(trimmed)
-                .ok()
-                .and_then(|v| v.get("id").cloned())
-                .map(|id| normalize_id(Some(&id)));
-            // Synchronize writing with the input thread so cancellation cannot race a late write.
-            let mut cancelled = self.cancelled_ids.lock().unwrap();
-            if let Some(res) = response
-                && !cancelled.contains(&normalize_id(res.get("id")))
-            {
-                writeln!(stdout, "{}", serde_json::to_string(&res)?)?;
-                stdout.flush()?;
-            }
-            if let Some(id) = req_id {
-                outstanding.lock().unwrap().remove(&id);
-                cancelled.remove(&id);
-            }
-        }
-
-        let _ = stdin_thread.join();
-        Ok(())
-    }
-
-    pub fn run_stdio_blocking(&mut self) -> Result<(), io::Error> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(self.run_stdio())
     }
 }
 

@@ -586,6 +586,136 @@ pub fn run(once: bool, json: bool, read_only: bool, params: Vec<(String, String)
     result
 }
 
+/// Attached to this server's observed state; never probes separate plugin processes.
+pub fn server_dashboard(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) -> Result<()> {
+    let mut terminal = ratatui::try_init()?;
+    let _restore = Restore;
+    let mut selected = 0usize;
+    loop {
+        let snapshot = state.lock().unwrap().clone();
+        if snapshot.status != "listening" {
+            break;
+        }
+        terminal.draw(|frame| draw_server(frame, &snapshot, selected))?;
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = selected
+                        .saturating_add(1)
+                        .min(snapshot.recent.len().saturating_sub(1))
+                }
+                KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                KeyCode::Char('r') => { /* next frame reads fresh server state */ }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn draw_server(frame: &mut Frame, snapshot: &crate::server::Snapshot, selected: usize) {
+    let areas = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Percentage(35),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .split(frame.area());
+    let header = format!(
+        "Kit {} · {} · {}\nUptime {}s · read-only {} · timeout {}s · {} active\nAllowlist: {} · roots: {}",
+        env!("CARGO_PKG_VERSION"),
+        safe(&snapshot.endpoint),
+        snapshot.status,
+        snapshot.started.elapsed().as_secs(),
+        snapshot.read_only,
+        snapshot.timeout,
+        snapshot.active.len(),
+        if snapshot.allowed_tools.is_empty() {
+            "all server-permitted tools".into()
+        } else {
+            snapshot.allowed_tools.join(", ")
+        },
+        if snapshot.roots.is_empty() {
+            "no filesystem root configured".into()
+        } else {
+            snapshot.roots.join(", ")
+        }
+    );
+    frame.render_widget(
+        Paragraph::new(
+            header
+                .lines()
+                .map(|line| Line::from(safe(line)))
+                .collect::<Vec<_>>(),
+        )
+        .block(panel(" SERVER ", true))
+        .wrap(Wrap { trim: false }),
+        areas[0],
+    );
+    let mut lines: Vec<Line> = snapshot
+        .plugins
+        .iter()
+        .map(|p| Line::from(safe(p)))
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::from(
+            "No plugins installed. Install a plugin and restart the server.",
+        ));
+    }
+    lines.extend(snapshot.active.iter().map(|call| {
+        Line::from(format!(
+            "#{} {} {} — {}",
+            call.sequence,
+            safe(&call.method),
+            safe(&call.name),
+            call.status
+        ))
+    }));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(" PLUGINS / ACTIVE CALLS ", false))
+            .wrap(Wrap { trim: false }),
+        areas[1],
+    );
+    let rows: Vec<ListItem> = snapshot
+        .recent
+        .iter()
+        .map(|call| {
+            ListItem::new(format!(
+                "#{} {} {} · {} · {}ms",
+                call.sequence,
+                safe(&call.method),
+                safe(&call.name),
+                call.status,
+                call.millis
+            ))
+        })
+        .collect();
+    let rows = if rows.is_empty() {
+        vec![ListItem::new(
+            "No completed calls yet. Waiting for an HTTP client.",
+        )]
+    } else {
+        rows
+    };
+    frame.render_stateful_widget(
+        List::new(rows)
+            .block(panel(" RECENT CALLS (64 max; no arguments) ", true))
+            .highlight_style(Style::default().fg(Color::Red)),
+        areas[2],
+        &mut ListState::default().with_selected(Some(selected)),
+    );
+    frame.render_widget(
+        Paragraph::new("↑/↓ select · r refresh · q quit server · Ctrl+C stop"),
+        areas[3],
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

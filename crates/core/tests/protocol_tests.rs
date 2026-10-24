@@ -508,3 +508,78 @@ fn dashboard_wasm_discovery_budget_interrupts_guest() {
     );
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
+
+#[test]
+fn cancelling_one_wasm_call_leaves_other_plugin_and_reused_id_usable() {
+    use rune_kit_core::{PluginInstance, WasmPluginInstance};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    fn output(name: &str, value: &str) -> String {
+        let stores: String = value
+            .bytes()
+            .enumerate()
+            .map(|(i, b)| {
+                format!("(call $store (i64.add (local.get $ptr) (i64.const {i})) (i32.const {b}))")
+            })
+            .collect();
+        format!(
+            "(func (export \"{name}\") (result i32) (local $ptr i64) (local.set $ptr (call $alloc (i64.const {}))) {stores} (call $output (local.get $ptr) (i64.const {})) i32.const 0)",
+            value.len(),
+            value.len()
+        )
+    }
+    fn instance(spin: bool) -> PluginInstance {
+        let list = r#"[{"name":"read","description":"Read fixture","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}]"#;
+        let call = if spin {
+            "(func (export \"mcp_call_tool\") (result i32) (loop $spin (br $spin)) i32.const 0)"
+                .into()
+        } else {
+            output("mcp_call_tool", r#""healthy""#)
+        };
+        let module = format!(
+            r#"(module
+            (import "extism:host/env" "alloc" (func $alloc (param i64) (result i64)))
+            (import "extism:host/env" "store_u8" (func $store (param i64 i32)))
+            (import "extism:host/env" "output_set" (func $output (param i64 i64)))
+            {} {call})"#,
+            output("mcp_list_tools", list)
+        );
+        PluginInstance::Wasm(Box::new(
+            WasmPluginInstance::load_from_bytes(
+                "fixture",
+                wat::parse_str(module).unwrap(),
+                Default::default(),
+                PluginManifest::default(),
+            )
+            .unwrap(),
+        ))
+    }
+    let mut router = McpRouter::new();
+    router.set_tool_timeout(3);
+    router.register("busy".into(), instance(true));
+    router.register("healthy".into(), instance(false));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let signal = cancel.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        signal.store(true, Ordering::Relaxed);
+    });
+    let request = |name: &str| {
+        serde_json::json!({"jsonrpc":"2.0","id":"same","method":"tools/call","params":{"name":name,"arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}).to_string()
+    };
+    let cancelled = router
+        .handle_cancellable(&request("busy__read"), cancel)
+        .unwrap();
+    canceller.join().unwrap();
+    assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
+    let healthy = router
+        .handle_cancellable(&request("healthy__read"), Arc::new(AtomicBool::new(false)))
+        .unwrap();
+    assert_eq!(healthy["id"], "same");
+    assert_eq!(
+        healthy["result"]["content"][0]["text"], "healthy",
+        "{healthy}"
+    );
+}

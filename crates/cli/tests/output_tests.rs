@@ -105,14 +105,16 @@ fn test_cli_search_json() {
 }
 
 #[test]
-fn test_cli_run_help_flags() {
+fn test_cli_serve_help_flags() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_rune-kit"))
-        .args(["run", "--help"])
+        .args(["serve", "--help"])
         .output()
-        .expect("Failed to execute rune-kit run --help");
+        .expect("Failed to execute rune-kit serve --help");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--read-only"));
     assert!(stdout.contains("--allow-tool"));
     assert!(stdout.contains("--timeout"));
+    assert!(stdout.contains("--headless"));
+    assert!(stdout.contains("--port"));
 }

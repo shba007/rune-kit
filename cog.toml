@@ -2,7 +2,7 @@ from_latest_tag = true
 ignore_merge_commits = true
 tag_prefix = "v"
 
-# Release preparation uses `cog changelog` plus Rust semver rules from main tags.
+# Release preparation uses Rust git-conventional/semver from main tags.
 # GitHub Actions owns its preparation commit/PR; do not run mutating cog bump.
 
 [commit_types]

@@ -120,7 +120,10 @@ fn public_text(text: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric() && c != '-')
         .any(|word| {
             let lower = word.to_ascii_lowercase();
-            ["cycle", "milestone"].iter().any(|prefix| {
+            matches!(
+                lower.as_str(),
+                "todo" | "tbd" | "placeholder" | "unreleased"
+            ) || ["cycle", "milestone"].iter().any(|prefix| {
                 lower.strip_prefix(prefix).is_some_and(|suffix| {
                     suffix.is_empty()
                         || suffix == "s"
@@ -140,15 +143,14 @@ fn public_text(text: &str) -> bool {
 fn releasable(commit: &Commit) -> bool {
     let summary = commit.summary.to_ascii_lowercase();
     public_text(&commit.summary)
-        && commit.scope.as_deref() != Some("release")
-        && commit.scope.as_deref() != Some("version")
+        && !(commit.kind == "ci" && commit.scope.as_deref() == Some("release"))
         && !summary.starts_with("update version")
         && !summary.starts_with("bump version")
-        && (commit.breaking_change
-            || matches!(
-                commit.kind.as_str(),
-                "🚀 Features" | "🐛 Bug Fixes" | "⚡ Performance"
-            ))
+        && !summary.starts_with("autoformat")
+        && !summary.contains("apply code fixes")
+        && !summary.contains("placeholder")
+        && !summary.starts_with("todo")
+        && !commit.kind.is_empty()
 }
 
 fn notes(commits: &[Commit]) -> String {
@@ -162,12 +164,7 @@ fn notes(commits: &[Commit]) -> String {
             }));
         }
         for text in entries {
-            let lower = text.to_ascii_lowercase();
-            if !public_text(text)
-                || ["added tests", "documented", "created shared wire fixtures"]
-                    .iter()
-                    .any(|prefix| lower.starts_with(prefix))
-            {
+            if !public_text(text) {
                 continue;
             }
             let entry = format!("- {}", text.trim());
@@ -249,15 +246,42 @@ pub fn plan(root: &Path) -> Result<Plan> {
         .ok_or("No release tag reachable from main")?;
     let data = output(
         root,
-        "cog",
+        "git",
         &[
-            "changelog",
+            "log",
+            "--no-merges",
+            "--format=%H%x00%B%x00",
             &format!("{base}..HEAD"),
-            "--template",
-            ".github/release-commits.tera",
         ],
     )?;
-    let commits: Vec<Commit> = serde_json::from_str(&data)?;
+    let fields: Vec<_> = data.split('\0').collect();
+    let commits: Vec<Commit> = fields
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter_map(|entry| {
+            let id = entry[0].trim();
+            let message = entry[1].trim();
+            let parsed = git_conventional::Commit::parse(message).ok()?;
+            let kind = match parsed.type_().as_str() {
+                "feat" => "🚀 Features",
+                "fix" => "🐛 Bug Fixes",
+                "perf" => "⚡ Performance",
+                other => other,
+            }
+            .to_owned();
+            Some(Commit {
+                id: id.into(),
+                summary: parsed.description().into(),
+                body: message
+                    .split_once('\n')
+                    .map(|(_, body)| body.trim().to_owned()),
+                scope: parsed.scope().map(|s| s.as_str().to_owned()),
+                kind,
+                breaking_change: parsed.breaking(),
+            })
+        })
+        .collect();
     let mut ids: Vec<_> = commits
         .iter()
         .filter(|c| releasable(c))
@@ -439,6 +463,13 @@ pub fn check(root: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Read-only synthetic migration preview, independent of uncommitted history.
+pub fn example() -> Result<String> {
+    let entry=Commit {id:"example".into(),summary:"Serve local MCP over HTTP with an attached dashboard".into(),body:Some("Migration: Replace rune-kit run with rune-kit serve; Studio connects to http://127.0.0.1:47601/mcp.\nRelease-note: Use --headless for background operation; package management and shared storage paths remain available.".into()),scope:None,kind:"🚀 Features".into(),breaking_change:true};
+    let next = next_version(base_version("v0.5.0")?, std::slice::from_ref(&entry));
+    Ok(format!("## {next} - example\n{}", notes(&[entry])))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,5 +642,44 @@ mod tests {
         );
         assert!(first.ends_with(history));
         assert_eq!(extract(&first, "0.5.0").unwrap(), plan.notes);
+    }
+}
+
+#[cfg(test)]
+mod semantic_release_tests {
+    use super::*;
+    #[test]
+    fn all_semantic_types_are_releasable_without_preparation_bookkeeping() {
+        for kind in [
+            "docs", "refactor", "style", "test", "build", "ci", "chore", "revert", "custom",
+        ] {
+            let commit = Commit {
+                id: kind.into(),
+                summary: "Improve local server diagnostics".into(),
+                body: None,
+                scope: None,
+                kind: kind.into(),
+                breaking_change: false,
+            };
+            assert!(releasable(&commit));
+            assert!(notes(&[commit]).contains("Improve local server diagnostics"));
+        }
+        let bot = Commit {
+            id: "bot".into(),
+            summary: "Publish prepared version".into(),
+            body: None,
+            scope: Some("release".into()),
+            kind: "ci".into(),
+            breaking_change: false,
+        };
+        assert!(!releasable(&bot));
+    }
+    #[test]
+    fn migration_preview_is_repeatable_and_extracts_exact_notes() {
+        let first = example().unwrap();
+        assert_eq!(first, example().unwrap());
+        let notes = extract(&first, "0.6.0").unwrap();
+        assert!(notes.contains("rune-kit serve"));
+        assert!(notes.contains("http://127.0.0.1:47601/mcp"));
     }
 }

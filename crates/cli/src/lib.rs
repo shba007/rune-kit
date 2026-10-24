@@ -18,7 +18,31 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start the MCP server gateway over stdio
+    /// Start the persistent local MCP HTTP server and attached terminal dashboard
+    Serve {
+        /// Optional installed plugin name or artifact path (default: all installed)
+        plugin: Option<String>,
+        #[arg(long, conflicts_with = "plugin")]
+        all: bool,
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
+        #[arg(long, default_value_t = 47601)]
+        port: u16,
+        /// Run without a terminal dashboard
+        #[arg(long)]
+        headless: bool,
+        #[arg(short, long, value_parser = parse_key_val)]
+        param: Vec<(String, String)>,
+        #[arg(long)]
+        read_only: bool,
+        #[arg(long = "allow-tool", value_delimiter = ',')]
+        allow_tool: Vec<String>,
+        /// Tool execution deadline in seconds
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
+    },
+    /// Removed public stdio command; use serve --headless
+    #[command(hide = true)]
     Run {
         /// Run a specific plugin by name or local file path
         plugin: Option<String>,
@@ -108,6 +132,7 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 }
 
 pub mod output;
+pub mod server;
 pub mod tui;
 
 use crate::output::{
@@ -134,96 +159,55 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Tui { .. } => unreachable!(),
-        Commands::Run {
+        Commands::Run { .. } => return Err("Public stdio serving was removed. Use `rune-kit serve --headless` and connect to http://127.0.0.1:47601/mcp (MCP HTTP 2026-07-28; Kit 0.6.0+).".into()),
+        Commands::Serve {
             plugin,
             all,
             param,
             read_only,
             allow_tool,
-            timeout,
+            timeout, bind, port, headless,
         } => {
+            if !bind.is_loopback() { return Err("Only loopback binding is supported".into()); }
+            let allow_tool_for_dashboard = allow_tool.clone();
             let mut router = McpRouter::new();
             router.set_read_only(read_only);
-            if !allow_tool.is_empty() {
-                router.set_allowed_tools(allow_tool);
-            }
-            if let Some(t) = timeout {
-                router.set_tool_timeout(t);
-            }
-
-            let mut params_map = resolve_host_env_params();
-            params_map.extend(param);
-
-            if all {
-                let lockfile = pm.load_lockfile();
-                if lockfile.plugins.is_empty() {
-                    eprintln!("No plugins installed to run in gateway mode. Install one first.");
-                    std::process::exit(1);
-                }
-                let mut loaded_count = 0;
-                for (name, plugin_entry) in lockfile.plugins {
-                    if let Some(path) = pm.get_plugin_path(&name) {
-                        let instance_res = match plugin_entry.execution_kind {
-                            ExecutionKind::Wasm => {
-                                PluginInstance::load_wasm_from_file(&name, path, params_map.clone())
-                            }
-                            ExecutionKind::Native => PluginInstance::load_native_from_file(
-                                &name,
-                                path,
-                                params_map.clone(),
-                            ),
-                        };
-                        match instance_res {
-                            Ok(instance) => {
-                                router.register(name, instance);
-                                loaded_count += 1;
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "[Rune Warning] Failed to load plugin '{}': {}. Other plugins will still serve.",
-                                    name, e
-                                );
-                            }
-                        }
-                    }
-                }
-                if loaded_count == 0 {
-                    eprintln!("Error: No installed plugins could be loaded successfully.");
-                    std::process::exit(1);
-                }
-            } else if let Some(target) = plugin {
-                let lockfile = pm.load_lockfile();
-                let (path, execution_kind) = if let Some(entry) = lockfile.plugins.get(&target) {
-                    (
-                        pm.get_plugin_path(&target).unwrap(),
-                        entry.execution_kind.clone(),
-                    )
+            if !allow_tool.is_empty() { router.set_allowed_tools(allow_tool); }
+            router.set_tool_timeout(timeout);
+            let mut server_params = resolve_host_env_params();
+            server_params.extend(param);
+            let metadata_path = rune_kit_core::paths::managed_root()?.join("installed.json");
+            let lockfile: rune_kit_core::Lockfile = match std::fs::read(&metadata_path) {
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e|format!("Cannot parse {}: {e}. Repair installed metadata before serving.",metadata_path.display()))?,
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound => Default::default(),
+                Err(e) => return Err(format!("Cannot read {}: {e}",metadata_path.display()).into()),
+            };
+            let targets:Vec<_> = match plugin {
+                Some(target) if !all => vec![target],
+                _ => {let mut names:Vec<_>=lockfile.plugins.keys().cloned().collect(); names.sort(); names},
+            };
+            let mut loaded=Vec::new(); let mut roots=Vec::new();
+            for target in targets {
+                let mut params = lockfile.plugins.get(&target).map(|entry|entry.default_params.clone()).unwrap_or_default();
+                params.extend(server_params.clone());
+                if let Some(root)=params.get("allowed_dir") { roots.push(format!("{target}: {root}")); }
+                let (path, kind, version) = if let Some(entry)=lockfile.plugins.get(&target) {
+                    (pm.get_plugin_path(&target).ok_or_else(||format!("Installed plugin {target} has no payload. Reinstall it before serving."))?,entry.execution_kind.clone(),entry.version.clone())
                 } else {
-                    let p = std::path::PathBuf::from(&target);
-                    let kind = if p.extension().is_some_and(|ext| ext == "wasm") {
-                        ExecutionKind::Wasm
-                    } else {
-                        ExecutionKind::Native
-                    };
-                    (p, kind)
+                    let path=std::path::PathBuf::from(&target);
+                    let kind=if path.extension().is_some_and(|v|v=="wasm") {ExecutionKind::Wasm} else {ExecutionKind::Native};
+                    (path,kind,"local artifact".into())
                 };
-
-                let instance = match execution_kind {
-                    ExecutionKind::Wasm => {
-                        PluginInstance::load_wasm_from_file(&target, path, params_map)?
-                    }
-                    ExecutionKind::Native => {
-                        PluginInstance::load_native_from_file(&target, path, params_map)?
-                    }
-                };
-                router.register(target, instance);
-            } else {
-                eprintln!("Error: Provide a plugin name/path or use `--all`");
-                std::process::exit(1);
+                let instance=match kind {
+                    ExecutionKind::Wasm => PluginInstance::load_wasm_from_file(&target,path,params),
+                    ExecutionKind::Native => PluginInstance::load_native_from_file(&target,path,params),
+                }.map_err(|e|format!("Cannot load plugin {target}: {e}. Repair its installation or select a working plugin explicitly."))?;
+                loaded.push(format!("{target} {version}: loaded ({kind:?}); discovery pending"));
+                router.register(target,instance);
             }
-
-            router.run_stdio().await?;
+            server::serve(router,server::Options {bind,port,headless,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}).await?;
         }
+
         Commands::Install {
             target,
             version,

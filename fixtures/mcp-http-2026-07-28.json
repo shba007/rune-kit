@@ -1,0 +1,324 @@
+{
+  "minimumKitRelease": "0.6.0 (planned HTTP release)",
+  "protocolVersion": "2026-07-28",
+  "transport": "Streamable HTTP",
+  "examples": [
+    {
+      "name": "discovery",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "server/discover"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "discovery",
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 200
+      }
+    },
+    {
+      "name": "tools",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/list"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "tools",
+        "method": "tools/list",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 200
+      }
+    },
+    {
+      "name": "read-time",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "{{time_tool}}"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "read-time",
+        "method": "tools/call",
+        "params": {
+          "name": "{{time_tool}}",
+          "arguments": {
+            "timezone": "UTC"
+          },
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 200
+      }
+    },
+    {
+      "name": "rules",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "resources/read",
+        "Mcp-Name": "rune://{{namespace}}/rules"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "rules",
+        "method": "resources/read",
+        "params": {
+          "uri": "rune://{{namespace}}/rules",
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 200
+      }
+    },
+    {
+      "name": "client-narrowing",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/list"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "client-narrowing",
+        "method": "tools/list",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            },
+            "io.rune-kit/allowedTools": []
+          }
+        }
+      },
+      "expected": {
+        "http": 200
+      }
+    },
+    {
+      "name": "write-refusal",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "{{filesystem_namespace}}__write_file"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "write-refusal",
+        "method": "tools/call",
+        "params": {
+          "name": "{{filesystem_namespace}}__write_file",
+          "arguments": {
+            "path": "blocked.txt",
+            "content": "must not be written"
+          },
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 200,
+        "errorCode": -32600
+      }
+    },
+    {
+      "name": "unsupported-version",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "1900-01-01",
+        "Mcp-Method": "server/discover"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "unsupported-version",
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "1900-01-01",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 400,
+        "errorCode": -32022
+      }
+    },
+    {
+      "name": "header-mismatch",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "ping"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "header-mismatch",
+        "method": "tools/list",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 400,
+        "errorCode": -32020
+      }
+    },
+    {
+      "name": "missing-capabilities",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "server/discover"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "missing-capabilities",
+        "method": "server/discover",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 400,
+        "errorCode": -32602
+      }
+    },
+    {
+      "name": "old-handshake",
+      "method": "POST",
+      "url": "http://127.0.0.1:47601/mcp",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "initialize"
+      },
+      "body": {
+        "jsonrpc": "2.0",
+        "id": "old-handshake",
+        "method": "initialize",
+        "params": {
+          "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {
+              "name": "studio",
+              "version": "http-client"
+            }
+          }
+        }
+      },
+      "expected": {
+        "http": 404,
+        "errorCode": -32601
+      }
+    }
+  ],
+  "cancellation": {
+    "action": "Close the SSE response stream of a long request",
+    "expected": "Only that operation is cancelled. No late response or replay; another request reusing its JSON-RPC id is independent."
+  },
+  "configuration": {
+    "command": "rune-kit serve --headless --read-only -p allowed_dir=<existing absolute test folder>",
+    "optionalBearerTokenEnvironment": "RUNE_KIT_HTTP_TOKEN",
+    "note": "Replace placeholder names using tools/list. No request root or permission override. Requires the corresponding installed plugins."
+  }
+}

@@ -591,6 +591,8 @@ pub struct NativeSidecar {
     stdin: Option<ChildStdin>,
     rx: Option<std::sync::mpsc::Receiver<Result<String, std::io::Error>>>,
     next_id: u64,
+    operation_cancel: Arc<std::sync::atomic::AtomicBool>,
+    operation_timeout: Option<std::time::Duration>,
 }
 
 impl NativeSidecar {
@@ -637,6 +639,8 @@ impl NativeSidecar {
             stdin: None,
             rx: None,
             next_id: 1,
+            operation_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            operation_timeout: None,
         };
 
         sidecar.spawn_process()?;
@@ -706,12 +710,21 @@ impl NativeSidecar {
         self.rx = None;
     }
 
+    pub(crate) fn set_operation_context(
+        &mut self,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        timeout: Option<std::time::Duration>,
+    ) {
+        self.operation_cancel = cancel;
+        self.operation_timeout = timeout;
+    }
+
     pub fn send_request(&mut self, method: &str, params: Value) -> Result<Value, RuntimeError> {
         self.send_request_with_cancel(
             method,
             params,
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            None,
+            self.operation_cancel.clone(),
+            self.operation_timeout,
         )
     }
 

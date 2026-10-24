@@ -1,19 +1,18 @@
-//! Small line-delimited stdio test harness, shared by integration checks and xtask.
+//! Small HTTP MCP test client. Private native pipes remain internal only.
 use serde_json::{Value, json};
 use std::{
     error::Error,
     io::{BufRead, BufReader, Read, Write},
     path::Path,
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc,
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
 pub struct Gateway {
     child: Child,
-    stdin: Option<ChildStdin>,
-    replies: mpsc::Receiver<std::result::Result<Value, String>>,
+    pub endpoint: String,
+    client: reqwest::blocking::Client,
+    pending: Option<reqwest::blocking::Response>,
     next: u64,
 }
 pub fn metadata() -> Value {
@@ -27,13 +26,15 @@ impl Gateway {
         env: &[(&str, &str)],
     ) -> Result<Self> {
         let mut command = Command::new(binary);
+        command.env_remove("RUNE_KIT_HTTP_TOKEN");
         command
-            .arg("run")
+            .arg("serve")
             .arg(plugin)
+            .args(["--headless", "--port", "0"])
             .args(args)
             .envs(env.iter().copied())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped());
         #[cfg(windows)]
         {
@@ -41,41 +42,70 @@ impl Gateway {
             command.creation_flags(0x08000000);
         }
         let mut child = command.spawn()?;
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take().ok_or("Missing stdout")?;
-        let mut stderr = child.stderr.take().ok_or("Missing stderr")?;
+        let mut stderr = BufReader::new(child.stderr.take().ok_or("Missing stderr")?);
+        let mut endpoint = None;
+        let mut startup = String::new();
+        loop {
+            let mut line = String::new();
+            if stderr.read_line(&mut line)? == 0 {
+                break;
+            }
+            startup.push_str(&line);
+            if let Some(rest) = line.strip_prefix("Kit HTTP listening at ") {
+                endpoint = Some(rest.split(';').next().unwrap().to_owned());
+                break;
+            }
+        }
+        let Some(endpoint) = endpoint else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Server failed: {startup}").into());
+        };
         std::thread::spawn(move || {
             let _ = std::io::copy(&mut stderr, &mut std::io::sink());
         });
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let result = line.map_err(|e| e.to_string()).and_then(|line| {
-                    serde_json::from_str(&line)
-                        .map_err(|e| format!("Non-JSON protocol stdout: {e}; {line}"))
-                });
-                if tx.send(result).is_err() {
-                    break;
-                }
-            }
-        });
         Ok(Self {
             child,
-            stdin,
-            replies: rx,
+            endpoint,
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(40))
+                .build()?,
+            pending: None,
             next: 0,
         })
     }
     pub fn send(&mut self, value: Value) -> Result<()> {
-        let stdin = self.stdin.as_mut().ok_or("Closed stdin")?;
-        writeln!(stdin, "{value}")?;
-        stdin.flush()?;
+        let mut request = self
+            .client
+            .post(&self.endpoint)
+            .header("Accept", "application/json, text/event-stream")
+            .header(
+                "MCP-Protocol-Version",
+                value["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]
+                    .as_str()
+                    .unwrap_or("2026-07-28"),
+            )
+            .header("Mcp-Method", value["method"].as_str().unwrap_or(""));
+        if let Some(name) = value["params"]["name"]
+            .as_str()
+            .or_else(|| value["params"]["uri"].as_str())
+        {
+            request = request.header("Mcp-Name", name);
+        }
+        self.pending = Some(request.json(&value).send()?);
         Ok(())
     }
-    pub fn receive(&self) -> Result<Value> {
-        self.replies
-            .recv_timeout(Duration::from_secs(40))?
-            .map_err(Into::into)
+    pub fn cancel(&mut self) {
+        drop(self.pending.take());
+    }
+    pub fn receive(&mut self) -> Result<Value> {
+        let response = self.pending.take().ok_or("No pending response")?;
+        let text = response.text()?;
+        let json = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap_or(text.trim());
+        Ok(serde_json::from_str(json)?)
     }
     pub fn request(&mut self, method: &str, mut params: Value) -> Result<Value> {
         self.next += 1;
@@ -108,19 +138,9 @@ impl Gateway {
 }
 impl Drop for Gateway {
     fn drop(&mut self) {
-        drop(self.stdin.take());
-        let start = std::time::Instant::now();
-        loop {
-            if self.child.try_wait().ok().flatten().is_some() {
-                break;
-            }
-            if start.elapsed() > Duration::from_secs(2) {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        self.cancel();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -247,7 +267,7 @@ pub fn conformance(binary: &Path, git: &Path, time: &Path, filesystem: &Path) ->
     }
     let outside = files.request(
         "tools/call",
-        json!({"name":read_name,"arguments":{"path":"../outside.txt"}}),
+        json!({"name":read_name,"arguments":{"path":"../outside.txt"},"allowed_dir":root.parent().unwrap().to_string_lossy()}),
     )?;
     if !outside.to_string().contains("Access denied") {
         return Err(format!("Outside-root access not denied: {outside}").into());
