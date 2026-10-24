@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.0 - 2026-10-24
+- introduce local MCP HTTP server with attached dashboard
+
 ## 0.5.0 - 2026-10-23
 - remove unit tests for release notes extraction, add xtask for release management and changelog handling
 - implement MCP 2026-07-28 discovery and per-request metadata model
