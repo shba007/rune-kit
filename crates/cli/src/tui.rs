@@ -45,6 +45,7 @@ pub fn server_dashboard(
     let mut configuration = false;
     let mut discovery: Option<std::thread::JoinHandle<()>> = None;
     let mut editor: Option<crate::config_editor::Editor> = None;
+    let mut sandbox: Option<crate::sandbox_panel::Panel> = None;
     loop {
         if let Some(editor) = &mut editor {
             editor.poll();
@@ -59,6 +60,9 @@ pub fn server_dashboard(
                 let fields = config.try_lock().map(|c| c.fields()).unwrap_or_default();
                 editor.draw(frame, &fields);
             }
+            if let Some(panel) = &sandbox {
+                panel.draw(frame);
+            }
         })?;
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
@@ -70,6 +74,12 @@ pub fn server_dashboard(
             if let Some(active) = &mut editor {
                 if active.key(key.code, config.clone(), router.clone(), state.clone()) {
                     editor = None;
+                }
+                continue;
+            }
+            if let Some(panel) = &mut sandbox {
+                if panel.key(key.code) {
+                    sandbox = None;
                 }
                 continue;
             }
@@ -95,6 +105,14 @@ pub fn server_dashboard(
                 }
                 KeyCode::Char('i') => configuration = !configuration,
                 KeyCode::Char('e') => editor = Some(Default::default()),
+                KeyCode::Char('s') => {
+                    if let Ok(config) = config.try_lock() {
+                        sandbox = Some(crate::sandbox_panel::Panel::open(
+                            config.plugins.iter().map(|p| p.name.clone()).collect(),
+                            snapshot.workspace_only,
+                        ));
+                    }
+                }
                 KeyCode::Tab => {
                     configuration = false;
                     tools_view = !tools_view;
@@ -190,6 +208,14 @@ fn draw_server(
         Span::styled("● ", Style::new().fg(Color::White)),
         Span::raw(format!("{}  ", safe(&snapshot.endpoint))),
         Span::styled(
+            if snapshot.workspace_only {
+                "workspace-only  "
+            } else {
+                "unenforced  "
+            },
+            Style::new().fg(DIM),
+        ),
+        Span::styled(
             format!(
                 "up {:02}:{:02}:{:02}",
                 seconds / 3600,
@@ -203,6 +229,14 @@ fn draw_server(
     if configuration {
         let lines = vec![
             label("Status", &snapshot.status),
+            label(
+                "Isolation",
+                if snapshot.workspace_only {
+                    "Workspace-only WASM"
+                } else {
+                    "Not enforced"
+                },
+            ),
             label(
                 "Access",
                 if snapshot.read_only {
@@ -277,12 +311,13 @@ fn draw_server(
         }
         draw_activity(frame, snapshot, selected, tools_view, activity);
     }
-    let hints = if area.width < 80 {
+    let hints = if area.width < 110 {
         [
             ("Tab", "view"),
             ("d", "discover"),
             ("i", "config"),
             ("e", "edit"),
+            ("s", "sandbox"),
             ("q", "stop"),
         ]
         .as_slice()
@@ -293,6 +328,7 @@ fn draw_server(
             ("d", "discover"),
             ("i", "config"),
             ("e", "edit"),
+            ("s", "sandbox"),
             ("r", "refresh"),
             ("q", "stop"),
         ]
@@ -487,6 +523,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            workspace_only: false,
             endpoint: "http://127.0.0.1:47601/mcp".into(),
             status: "listening".into(),
             started: Instant::now(),

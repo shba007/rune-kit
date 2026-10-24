@@ -31,6 +31,9 @@ pub enum Commands {
         /// Run without a terminal dashboard
         #[arg(long)]
         headless: bool,
+        /// Isolate WASM files to per-plugin workspaces; block native plugins and helpers
+        #[arg(long)]
+        workspace_only: bool,
         #[arg(short, long, value_parser = parse_key_val)]
         param: Vec<(String, String)>,
         #[arg(long)]
@@ -122,6 +125,7 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 mod config_editor;
 pub mod configuration;
 pub mod output;
+mod sandbox_panel;
 pub mod server;
 pub mod tui;
 
@@ -147,7 +151,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             param,
             read_only,
             allow_tool,
-            timeout, bind, port, headless,
+            timeout, bind, port, headless, workspace_only,
         } => {
             if !bind.is_loopback() { return Err("Only loopback binding is supported".into()); }
             let allow_tool_for_dashboard = allow_tool.clone();
@@ -168,11 +172,16 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {let mut names:Vec<_>=lockfile.plugins.keys().cloned().collect(); names.sort(); names},
             };
             let mut dashboard_config = configuration::Configuration::read(metadata_path.parent().unwrap().join("dashboard.json"))?;
+            if workspace_only && targets.iter().any(|target| lockfile.plugins.get(target).is_some_and(|p|p.execution_kind == ExecutionKind::Native)
+                || (!lockfile.plugins.contains_key(target) && !target.ends_with(".wasm"))) {
+                return Err("Workspace-only mode blocks native plugins. Select a WASM plugin explicitly, or omit --workspace-only for unenforced execution.".into());
+            }
+            let sandbox = if workspace_only { Some(rune_kit_core::sandbox::Sandbox::open(rune_kit_core::paths::sandbox_root()?)?) } else { None };
             let mut loaded=Vec::new(); let mut roots=Vec::new();
             for target in targets {
                 let mut params = lockfile.plugins.get(&target).map(|entry|entry.default_params.clone()).unwrap_or_default();
                 params.extend(server_params.clone());
-                if let Some(root)=params.get("allowed_dir") { roots.push(format!("{target}: {root}")); }
+                if !workspace_only && let Some(root)=params.get("allowed_dir") { roots.push(format!("{target}: {root}")); }
                 let (path, kind, version) = if let Some(entry)=lockfile.plugins.get(&target) {
                     (pm.get_plugin_path(&target).ok_or_else(||format!("Installed plugin {target} has no payload. Reinstall it before serving."))?,entry.execution_kind.clone(),entry.version.clone())
                 } else {
@@ -181,8 +190,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (path,kind,"local artifact".into())
                 };
                 let spec = configuration::Plugin { name: target.clone(), path: path.clone(), kind: kind.clone(), params: params.clone(),
-                    manifest: lockfile.plugins.get(&target).and_then(|p| p.manifest.clone()).unwrap_or_default() };
-                let instance = if lockfile.plugins.contains_key(&target) {
+                    workspace: sandbox.as_ref().map(|s|s.workspace(&target)).transpose()?,
+                    manifest: lockfile.plugins.get(&target).and_then(|p| p.manifest.clone()).or_else(||path.parent().and_then(|parent|rune_kit_core::PluginManifest::from_file(parent.join("plugin.toml")).ok())).unwrap_or_default() };
+                if let Some(workspace) = &spec.workspace { roots.push(format!("{target}: /workspace ({})",workspace.display())); }
+                let instance = if workspace_only || lockfile.plugins.contains_key(&target) {
                     spec.load(dashboard_config.settings()).map_err(|e| format!("Cannot load plugin {target}: {e}"))?
                 } else {
                     match kind {
@@ -205,7 +216,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 router.register(target,instance);
             }
-            server::serve(router,server::Options {bind,port,headless,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}, dashboard_config).await?;
+            server::serve(router,server::Options {bind,port,headless,workspace_only,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}, dashboard_config).await?;
         }
 
         Commands::Install {

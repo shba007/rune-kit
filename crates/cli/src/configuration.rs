@@ -17,6 +17,7 @@ pub struct Plugin {
     pub kind: ExecutionKind,
     pub manifest: PluginManifest,
     pub params: HashMap<String, String>,
+    pub workspace: Option<PathBuf>,
 }
 
 impl Plugin {
@@ -57,9 +58,17 @@ impl Plugin {
 
     pub fn load(&self, settings: &Settings) -> Result<PluginInstance, String> {
         let params = self.parameters(settings)?;
+        if self.workspace.is_some() && self.kind == ExecutionKind::Native {
+            return Err("Native plugins are blocked in workspace-only mode".into());
+        }
         match self.kind {
             ExecutionKind::Wasm => {
                 let bytes = std::fs::read(&self.path).map_err(|_| "Cannot read plugin payload")?;
+                if let Some(workspace) = &self.workspace {
+                    return WasmPluginInstance::load_in_workspace(&self.name,bytes,params,self.manifest.clone(),workspace)
+                        .map(|p|PluginInstance::Wasm(Box::new(p)))
+                        .map_err(|_|"Cannot load workspace-only WASM plugin; native helpers and external paths are unavailable".into());
+                }
                 WasmPluginInstance::load_from_bytes(
                     &self.name,
                     bytes,
@@ -331,6 +340,25 @@ impl Configuration {
 mod tests {
     use super::*;
     #[test]
+    fn workspace_mode_cannot_reload_a_native_plugin() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = Plugin {
+            name: "native".into(),
+            path: PathBuf::new(),
+            kind: ExecutionKind::Native,
+            manifest: PluginManifest::default(),
+            params: Default::default(),
+            workspace: Some(root.path().to_owned()),
+        };
+        assert!(
+            plugin
+                .load(&Settings::default())
+                .err()
+                .unwrap()
+                .contains("Native plugins are blocked")
+        );
+    }
+    #[test]
     fn shared_defaults_and_plugin_overrides_follow_native_and_wasm_mappings() {
         let manifest: PluginManifest = serde_json::from_value(serde_json::json!({"configuration":{"schema_version":1,"fields":{
             "timezone":{"type":"string","description":"Timezone","required":false,"secret":false,"env":["TIMEZONE","DEFAULT_TIMEZONE"],"config_key":"default_timezone"}
@@ -341,6 +369,7 @@ mod tests {
             kind: ExecutionKind::Native,
             manifest,
             params: Default::default(),
+            workspace: None,
         };
         let mut settings = Settings::default();
         settings.shared.insert("timezone".into(), "UTC".into());

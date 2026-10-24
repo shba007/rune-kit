@@ -27,6 +27,50 @@ fn fixture() -> PathBuf {
 mod support;
 
 #[test]
+fn workspace_only_mode_serves_wasm_without_mounting_approved_external_paths() {
+    let root = tempfile::tempdir().unwrap();
+    let wasm = root.path().join("minimal.wasm");
+    fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
+    let original = root.path().join("original.txt");
+    fs::write(&original, b"retained original").unwrap();
+    let mut sandbox = rune_kit_core::sandbox::Sandbox::open(root.path().join("sandbox")).unwrap();
+    sandbox.approve(wasm.to_str().unwrap(), &original).unwrap();
+    let data = env(root.path());
+    let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut gateway =
+        Gateway::start(&support::binary(), &wasm, &["--workspace-only"], &data).unwrap();
+    let reply = gateway.request("ping", json!({})).unwrap();
+    assert!(reply.get("error").is_none(), "{reply}");
+    assert_eq!(fs::read(&original).unwrap(), b"retained original");
+    let workspace = sandbox.workspace(wasm.to_str().unwrap()).unwrap();
+    assert_eq!(fs::read_dir(workspace).unwrap().count(), 0);
+}
+
+#[test]
+fn workspace_only_mode_rejects_native_plugins_without_starting_a_server() {
+    let root = tempfile::tempdir().unwrap();
+    installed(root.path(), &fixture());
+    for target in [None, Some(fixture())] {
+        let mut command = Command::new(support::binary());
+        command.args(["serve", "--workspace-only", "--headless", "--port", "0"]);
+        if let Some(path) = target {
+            command.arg(path);
+        }
+        command.env("RUNE_KIT_DATA_DIR", root.path());
+        let output = support::output(&mut command);
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(
+            error.contains("Workspace-only mode blocks native plugins"),
+            "{error}"
+        );
+        assert!(!error.contains("Kit HTTP listening"));
+    }
+    let output = support::output(Command::new(support::binary()).args(["serve", "--help"]));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--workspace-only"));
+}
+
+#[test]
 fn dashboard_configuration_applies_to_live_native_instance_and_preserves_failed_edits() {
     use rune_kit_cli::configuration::{Configuration, Plugin};
     use rune_kit_core::{ExecutionKind, McpRouter, PluginManifest};
@@ -46,6 +90,7 @@ fn dashboard_configuration_applies_to_live_native_instance_and_preserves_failed_
         kind: ExecutionKind::Native,
         manifest,
         params: Default::default(),
+        workspace: None,
     };
     let mut config = Configuration::read(path.clone()).unwrap();
     let router = Arc::new(Mutex::new(McpRouter::new()));
@@ -342,7 +387,23 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
             "Discovery was not shown: {}",
             String::from_utf8_lossy(&evidence)
         );
-        writer.write_all(b"i").unwrap();
+        writer.write_all(b"s").unwrap();
+        writer.flush().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && !String::from_utf8_lossy(&evidence).contains("NOT ACTIVE")
+        {
+            if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+                evidence.extend(bytes);
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&evidence).contains("NOT ACTIVE"),
+            "Sandbox disclosure missing"
+        );
+        assert!(root.path().join("sandbox").is_dir());
+        assert!(!root.path().join("sandbox/approvals.json").exists());
+        writer.write_all(b"qi").unwrap();
         writer.flush().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline

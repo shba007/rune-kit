@@ -30,6 +30,7 @@ pub struct Options {
     pub bind: IpAddr,
     pub port: u16,
     pub headless: bool,
+    pub workspace_only: bool,
     pub read_only: bool,
     pub allowed_tools: Vec<String>,
     pub timeout: u64,
@@ -46,6 +47,7 @@ pub struct Call {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub workspace_only: bool,
     pub endpoint: String,
     pub status: String,
     pub started: Instant,
@@ -690,6 +692,7 @@ pub async fn serve(
     let address = listener.local_addr()?;
     let endpoint = format!("http://{address}/mcp");
     let snapshot = Arc::new(Mutex::new(Snapshot {
+        workspace_only: options.workspace_only,
         endpoint: endpoint.clone(),
         status: "listening".into(),
         started: Instant::now(),
@@ -716,7 +719,14 @@ pub async fn serve(
             .ok()
             .filter(|v| !v.is_empty()),
     });
-    eprintln!("Kit HTTP listening at {endpoint}; Ctrl+C to stop");
+    eprintln!(
+        "Kit HTTP listening at {endpoint}; filesystem isolation: {}; Ctrl+C to stop",
+        if options.workspace_only {
+            "workspace-only WASM; external originals and native helpers blocked"
+        } else {
+            "not enforced"
+        }
+    );
     let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
     use std::io::IsTerminal;
     let dashboard_stop = stop_tx.clone();

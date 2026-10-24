@@ -4,6 +4,7 @@ pub mod protocol;
 pub mod provision;
 pub mod registry;
 pub mod runtime;
+pub mod sandbox;
 
 pub use manifest::{
     BinaryDependencySpec, Capabilities, ExecCapability, ExecutionKind, FilesystemCapability,

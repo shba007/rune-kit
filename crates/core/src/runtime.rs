@@ -300,12 +300,57 @@ impl WasmPluginInstance {
     pub fn load_from_bytes(
         name: &str,
         bytes: Vec<u8>,
+        params: HashMap<String, String>,
+        manifest: PluginManifest,
+    ) -> Result<Self, RuntimeError> {
+        Self::load_with_workspace(name, bytes, params, manifest, None)
+    }
+
+    /// Only the given workspace is mounted, at /workspace. No native host bridges
+    /// are registered; modules importing those bridges fail to instantiate.
+    pub fn load_in_workspace(
+        name: &str,
+        bytes: Vec<u8>,
+        params: HashMap<String, String>,
+        manifest: PluginManifest,
+        workspace: &Path,
+    ) -> Result<Self, RuntimeError> {
+        if !workspace.is_absolute() || !workspace.is_dir() {
+            return Err(RuntimeError::Execution(
+                "Workspace must be an existing absolute directory".into(),
+            ));
+        }
+        crate::sandbox::check_links(workspace)?;
+        let workspace = std::fs::canonicalize(workspace)?;
+        Self::load_with_workspace(name, bytes, params, manifest, Some(workspace))
+    }
+
+    fn load_with_workspace(
+        name: &str,
+        bytes: Vec<u8>,
         mut params: HashMap<String, String>,
         manifest: PluginManifest,
+        workspace: Option<PathBuf>,
     ) -> Result<Self, RuntimeError> {
         let provisioner = BinaryProvisioner::new();
         // Inject provisioned binaries and update PATH for guest execution
-        provisioner.inject_env_vars(&manifest.capabilities.exec.allowed_binaries, &mut params);
+        if workspace.is_none() {
+            provisioner.inject_env_vars(&manifest.capabilities.exec.allowed_binaries, &mut params);
+        }
+
+        if workspace.is_some() {
+            let root_key = manifest
+                .capabilities
+                .filesystem
+                .as_ref()
+                .and_then(|fs| fs.root_param.as_deref())
+                .unwrap_or("allowed_dir");
+            params.retain(|key, _| {
+                !key.eq_ignore_ascii_case(root_key) && !key.eq_ignore_ascii_case("allowed_dir")
+            });
+            params.insert(root_key.to_owned(), "/workspace".into());
+            params.insert("allowed_dir".into(), "/workspace".into());
+        }
 
         let mut extism_manifest = Manifest::new([Wasm::data(bytes)]);
 
@@ -347,7 +392,10 @@ impl WasmPluginInstance {
             .as_ref()
             .and_then(|fs| fs.root_param.as_deref())
             .unwrap_or("allowed_dir");
-        if let Some(root) = get_param(root_key) {
+        if let Some(workspace) = &workspace {
+            extism_manifest = extism_manifest
+                .with_allowed_path(workspace.to_string_lossy().into_owned(), "/workspace");
+        } else if let Some(root) = get_param(root_key) {
             let path = std::path::Path::new(&root);
             if root.trim().is_empty() || !path.is_absolute() || !path.is_dir() {
                 return Err(RuntimeError::Execution(format!(
@@ -373,29 +421,34 @@ impl WasmPluginInstance {
             params,
         };
 
-        let plugin = PluginBuilder::new(extism_manifest)
-            .with_wasi(true)
-            .with_function(
-                "host_cmd_exec",
-                [PTR],
-                [PTR],
-                UserData::new(host_ctx.clone()),
-                host_cmd_exec,
-            )
-            .with_function(
-                "host_sidecar_exec",
-                [PTR],
-                [PTR],
-                UserData::new(host_ctx.clone()),
-                host_sidecar_exec,
-            )
-            .with_function(
-                "host_get_binary_path",
-                [PTR],
-                [PTR],
-                UserData::new(host_ctx),
-                host_get_binary_path,
-            )
+        let builder = PluginBuilder::new(extism_manifest).with_wasi(true);
+        let builder = if workspace.is_some() {
+            builder
+        } else {
+            builder
+                .with_function(
+                    "host_cmd_exec",
+                    [PTR],
+                    [PTR],
+                    UserData::new(host_ctx.clone()),
+                    host_cmd_exec,
+                )
+                .with_function(
+                    "host_sidecar_exec",
+                    [PTR],
+                    [PTR],
+                    UserData::new(host_ctx.clone()),
+                    host_sidecar_exec,
+                )
+                .with_function(
+                    "host_get_binary_path",
+                    [PTR],
+                    [PTR],
+                    UserData::new(host_ctx),
+                    host_get_binary_path,
+                )
+        };
+        let plugin = builder
             .build()
             .map_err(|e| RuntimeError::ExtismInit(e.to_string()))?;
 
@@ -1162,5 +1215,166 @@ impl PluginInstance {
             PluginInstance::Wasm(w) => w.get_prompt(name, arguments),
             PluginInstance::Native(n) => n.get_prompt(name, arguments),
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("kit-wasi-{}-{nonce}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            std::fs::create_dir(path.join("workspace")).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn workspace_wasi_writes_inside_but_cannot_open_originals_or_parent_paths() {
+        let fixture = Fixture::new();
+        let workspace = fixture.0.join("workspace");
+        let original = fixture.0.join("original.txt");
+        std::fs::write(&original, b"original unchanged").unwrap();
+        let absolute: String = original
+            .to_str()
+            .unwrap()
+            .bytes()
+            .map(|b| format!("\\{b:02x}"))
+            .collect();
+        let wat = format!(
+            r#"(module
+            (import "wasi_snapshot_preview1" "path_open" (func $open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+            (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32) (result i32)))
+            (import "wasi_snapshot_preview1" "fd_read" (func $read (param i32 i32 i32 i32) (result i32)))
+            (import "wasi_snapshot_preview1" "fd_close" (func $close (param i32) (result i32)))
+            (import "wasi_snapshot_preview1" "fd_prestat_get" (func $prestat (param i32 i32) (result i32)))
+            (import "wasi_snapshot_preview1" "path_symlink" (func $symlink (param i32 i32 i32 i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (data (i32.const 100) "inside.txt")
+            (data (i32.const 128) "changed")
+            (data (i32.const 160) "../original.txt")
+            (data (i32.const 192) "escape")
+            (data (i32.const 256) "{absolute}")
+            (func (export "probe") (result i32)
+                ;; Create/write/read back a file inside the only preopen (fd 3).
+                i32.const 3 i32.const 0 i32.const 100 i32.const 10 i32.const 9
+                i64.const 66 i64.const 0 i32.const 0 i32.const 0 call $open
+                if unreachable end
+                i32.const 64 i32.const 128 i32.store
+                i32.const 68 i32.const 7 i32.store
+                i32.const 0 i32.load i32.const 64 i32.const 1 i32.const 8 call $write
+                if unreachable end
+                i32.const 0 i32.load call $close drop
+                ;; Parent traversal must fail for both read and write.
+                i32.const 3 i32.const 0 i32.const 160 i32.const 15 i32.const 0
+                i64.const 2 i64.const 0 i32.const 0 i32.const 0 call $open i32.eqz
+                if unreachable end
+                i32.const 3 i32.const 0 i32.const 160 i32.const 15 i32.const 0
+                i64.const 64 i64.const 0 i32.const 0 i32.const 0 call $open i32.eqz
+                if unreachable end
+                ;; An absolute host path is not a guest capability.
+                i32.const 3 i32.const 0 i32.const 256 i32.const {length} i32.const 0
+                i64.const 2 i64.const 0 i32.const 0 i32.const 0 call $open i32.eqz
+                if unreachable end
+                ;; There must not be a second preopened directory.
+                i32.const 4 i32.const 16 call $prestat i32.eqz if unreachable end
+                ;; If symlink creation is supported, following it must not escape.
+                i32.const 256 i32.const {length} i32.const 3 i32.const 192 i32.const 6 call $symlink i32.eqz
+                if
+                    i32.const 3 i32.const 1 i32.const 192 i32.const 6 i32.const 0
+                    i64.const 2 i64.const 0 i32.const 0 i32.const 0 call $open i32.eqz
+                    if unreachable end
+                    i32.const 3 i32.const 1 i32.const 192 i32.const 6 i32.const 0
+                    i64.const 64 i64.const 0 i32.const 0 i32.const 0 call $open i32.eqz
+                    if unreachable end
+                end
+                ;; Read the workspace file directly through WASI.
+                i32.const 3 i32.const 0 i32.const 100 i32.const 10 i32.const 0
+                i64.const 2 i64.const 0 i32.const 0 i32.const 0 call $open
+                if unreachable end
+                i32.const 64 i32.const 512 i32.store
+                i32.const 68 i32.const 7 i32.store
+                i32.const 0 i32.load i32.const 64 i32.const 1 i32.const 8 call $read
+                if unreachable end
+                i32.const 8 i32.load i32.const 7 i32.ne if unreachable end
+                i32.const 512 i32.load8_u i32.const 99 i32.ne if unreachable end
+                i32.const 0 i32.load call $close drop
+                i32.const 0))"#,
+            length = original.to_str().unwrap().len()
+        );
+        let mut params = HashMap::new();
+        params.insert("allowed_dir".into(), fixture.0.to_str().unwrap().into());
+        params.insert("ALLOWED_DIR".into(), fixture.0.to_str().unwrap().into());
+        let mut plugin = WasmPluginInstance::load_in_workspace(
+            "fixture",
+            wat::parse_str(wat).unwrap(),
+            params,
+            PluginManifest::default(),
+            &workspace,
+        )
+        .unwrap();
+        plugin.plugin.call::<(), ()>("probe", ()).unwrap();
+        assert_eq!(
+            std::fs::read(workspace.join("inside.txt")).unwrap(),
+            b"changed"
+        );
+        assert_eq!(std::fs::read(original).unwrap(), b"original unchanged");
+        assert!(!fixture.0.join("inside.txt").exists());
+    }
+
+    #[test]
+    fn workspace_mode_rejects_native_helper_imports_and_invalid_roots() {
+        let fixture = Fixture::new();
+        for helper in ["host_cmd_exec", "host_sidecar_exec", "host_get_binary_path"] {
+            let bytes = wat::parse_str(format!(
+                r#"(module (import "extism:host/user" "{helper}" (func (param i64) (result i64))))"#
+            ))
+            .unwrap();
+            assert!(
+                WasmPluginInstance::load_in_workspace(
+                    "fixture",
+                    bytes,
+                    Default::default(),
+                    PluginManifest::default(),
+                    &fixture.0.join("workspace")
+                )
+                .is_err(),
+                "{helper}"
+            );
+        }
+        let bytes = wat::parse_str("(module)").unwrap();
+        assert!(
+            WasmPluginInstance::load_in_workspace(
+                "fixture",
+                bytes.clone(),
+                Default::default(),
+                PluginManifest::default(),
+                Path::new("relative")
+            )
+            .is_err()
+        );
+        assert!(
+            WasmPluginInstance::load_in_workspace(
+                "fixture",
+                bytes,
+                Default::default(),
+                PluginManifest::default(),
+                &fixture.0.join("missing")
+            )
+            .is_err()
+        );
     }
 }

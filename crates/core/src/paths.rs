@@ -22,6 +22,18 @@ pub fn installation_root() -> io::Result<PathBuf> {
         .map(|p| p.join(".rune"))
         .ok_or_else(|| io::Error::other("Cannot resolve user home"))
 }
+
+/// Sandbox state stays under the actual home, or inside an explicit data override.
+pub fn sandbox_root() -> io::Result<PathBuf> {
+    if let Some(value) = std::env::var_os("RUNE_KIT_DATA_DIR") {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(io::Error::other("RUNE_KIT_DATA_DIR must be absolute"));
+        }
+        return Ok(path.join("sandbox"));
+    }
+    Ok(installation_root()?.join("sandbox"))
+}
 fn default_root(home: &Path, data: Option<&Path>) -> io::Result<PathBuf> {
     let destination = home.join(".rune/tools");
     let visible = home.join("rune/tools");
