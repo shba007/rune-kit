@@ -1,12 +1,11 @@
 {
   "formatted_published_notes": false,
-  "base_tag": "v0.6.0",
-  "version": "0.7.0",
+  "base_tag": "v0.7.0",
+  "version": "0.8.0",
   "commits": [
-    "4c2458a546c7560a61ccbeaabe981071f0fb842d",
-    "b577fd9c82ccc8fc7531fa30cd3bf0a399b768d3"
+    "b45ea6a7c8a62b19a15a673bcb922989f1b77fe6"
   ],
-  "notes_sha256": "8d6f2df77f4722b0405558f20a12df52dec6d5a5fe180d01ee19f87b95f55e23",
-  "source_head": "4c2458a546c7560a61ccbeaabe981071f0fb842d",
+  "notes_sha256": "e9ad5cde32a510d336151dc992ef121eb1a644a4f0a3f059b28be332a94e8116",
+  "source_head": "b45ea6a7c8a62b19a15a673bcb922989f1b77fe6",
   "generator": "cocogitto@7.0.0"
 }
