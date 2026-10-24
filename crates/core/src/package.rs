@@ -39,6 +39,73 @@ pub struct FetchedBundle {
     pub source: String,
 }
 
+struct CliAsset {
+    tag: String,
+    url: String,
+    digest: Option<String>,
+    sidecar: Option<String>,
+}
+
+fn verify_cli_checksum(bytes: &[u8], expected: &str) -> Result<(), PackageError> {
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(PackageError::SelfUpdate(
+            "Invalid release SHA-256 checksum".into(),
+        ));
+    }
+    let actual: String = Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(PackageError::SelfUpdate(
+            "Release checksum mismatch; existing installation was not changed".into(),
+        ));
+    }
+    Ok(())
+}
+fn activate_cli_update(executable: &Path, binary: &[u8]) -> Result<(), PackageError> {
+    let parent = executable
+        .parent()
+        .ok_or_else(|| PackageError::SelfUpdate("Cannot resolve executable directory".into()))?;
+    let stage = parent.join(format!(
+        ".rune-kit-update-{}-{}.tmp",
+        std::process::id(),
+        chrono_timestamp()
+    ));
+    let result = (|| -> Result<(), PackageError> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&stage)?;
+        file.write_all(binary)?;
+        file.sync_all()?;
+        drop(file);
+        set_executable_permissions(&stage)?;
+        #[cfg(windows)]
+        {
+            let backup = parent.join(format!(
+                ".rune-kit-old-{}-{}.tmp",
+                std::process::id(),
+                chrono_timestamp()
+            ));
+            std::fs::rename(executable, &backup)?;
+            if let Err(e) = std::fs::rename(&stage, executable) {
+                let _ = std::fs::rename(&backup, executable);
+                return Err(e.into());
+            }
+            let _ = std::fs::remove_file(backup);
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::rename(&stage, executable)?;
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&stage);
+    result
+}
+
 pub struct PackageManager {
     base_dir: PathBuf,
     lockfile_path: PathBuf,
@@ -166,8 +233,16 @@ impl PackageManager {
 
     pub async fn fetch_latest_cli_release(
         &self,
-        requested_version: Option<&str>,
+        version: Option<&str>,
     ) -> Result<(String, String), PackageError> {
+        let asset = self.cli_release_asset(version).await?;
+        Ok((asset.tag, asset.url))
+    }
+
+    async fn cli_release_asset(
+        &self,
+        requested_version: Option<&str>,
+    ) -> Result<CliAsset, PackageError> {
         let client = reqwest::Client::builder().user_agent("rune-kit").build()?;
 
         let url = match requested_version {
@@ -225,7 +300,23 @@ impl PackageManager {
             .ok_or_else(|| PackageError::SelfUpdate("Asset missing download URL".to_string()))?
             .to_string();
 
-        Ok((tag_name, download_url))
+        let digest = asset
+            .get("digest")
+            .and_then(|v| v.as_str())
+            .and_then(|v| v.strip_prefix("sha256:"))
+            .map(str::to_owned);
+        let sidecar_name = format!("{}.sha256", asset["name"].as_str().unwrap_or(""));
+        let sidecar = assets
+            .iter()
+            .find(|a| a["name"].as_str() == Some(&sidecar_name))
+            .and_then(|a| a["browser_download_url"].as_str())
+            .map(str::to_owned);
+        Ok(CliAsset {
+            tag: tag_name,
+            url: download_url,
+            digest,
+            sidecar,
+        })
     }
 
     pub async fn self_update(
@@ -234,7 +325,9 @@ impl PackageManager {
         force: bool,
     ) -> Result<String, PackageError> {
         let current_ver = env!("CARGO_PKG_VERSION");
-        let (tag, download_url) = self.fetch_latest_cli_release(requested_version).await?;
+        let asset = self.cli_release_asset(requested_version).await?;
+        let tag = asset.tag;
+        let download_url = asset.url;
         let target_ver = tag.strip_prefix('v').unwrap_or(&tag);
 
         if !force && !is_newer_version(target_ver, current_ver) && target_ver == current_ver {
@@ -245,39 +338,40 @@ impl PackageManager {
         }
 
         let client = reqwest::Client::builder().user_agent("rune-kit").build()?;
+        let expected = if let Some(digest) = asset.digest {
+            digest
+        } else if let Some(url) = asset.sidecar {
+            client
+                .get(url)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?
+                .split_whitespace()
+                .next()
+                .ok_or_else(|| PackageError::SelfUpdate("Empty release checksum sidecar".into()))?
+                .to_owned()
+        } else {
+            return Err(PackageError::SelfUpdate(
+                "Release has no SHA-256 digest or sidecar; existing executable was not changed"
+                    .into(),
+            ));
+        };
         let archive_bytes = client
             .get(&download_url)
             .send()
             .await?
+            .error_for_status()?
             .bytes()
             .await?
             .to_vec();
 
-        let current_exe = std::env::current_exe()?;
-        let exe_dir = current_exe.parent().ok_or_else(|| {
-            PackageError::SelfUpdate("Could not determine current executable directory".to_string())
-        })?;
-
+        verify_cli_checksum(&archive_bytes, &expected)?;
         let binary_bytes = extract_single_binary(&archive_bytes, "rune-kit")?;
-        let temp_bin = exe_dir.join(format!(".rune-kit-update-{}.tmp", chrono_timestamp()));
-        std::fs::write(&temp_bin, &binary_bytes)?;
-        set_executable_permissions(&temp_bin)?;
-
-        #[cfg(windows)]
-        {
-            let old_backup = exe_dir.join(format!(".rune-kit-old-{}.tmp", chrono_timestamp()));
-            std::fs::rename(&current_exe, &old_backup)?;
-            if let Err(e) = std::fs::rename(&temp_bin, &current_exe) {
-                let _ = std::fs::rename(&old_backup, &current_exe);
-                return Err(PackageError::Io(e));
-            }
-            let _ = std::fs::remove_file(&old_backup);
-        }
-
-        #[cfg(not(windows))]
-        {
-            std::fs::rename(&temp_bin, &current_exe)?;
-        }
+        // Update the invoked executable, including explicit custom locations.
+        // The installer establishes ~/.rune; never replace Infer or a second Kit.
+        activate_cli_update(&std::env::current_exe()?, &binary_bytes)?;
 
         Ok(tag)
     }
@@ -1392,5 +1486,48 @@ mod cli_archive_tests {
                 b"expected executable"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hidden_root_update_tests {
+    use super::*;
+    #[test]
+    fn self_update_in_hidden_root_verifies_checksum_and_preserves_infer_and_tools() {
+        let root = std::env::temp_dir().join(format!("kit-update-{}", std::process::id()));
+        let hidden = root.join(".rune");
+        std::fs::create_dir_all(hidden.join("tools/plugins")).unwrap();
+        std::fs::create_dir_all(hidden.join("infer/config")).unwrap();
+        let exe = hidden.join(if cfg!(windows) {
+            "rune-kit.exe"
+        } else {
+            "rune-kit"
+        });
+        let infer = hidden.join(if cfg!(windows) {
+            "rune-infer.exe"
+        } else {
+            "rune-infer"
+        });
+        std::fs::write(&exe, b"previous kit").unwrap();
+        std::fs::write(&infer, b"infer").unwrap();
+        std::fs::write(hidden.join("tools/plugins/test.wasm"), b"plugin").unwrap();
+        let update = b"verified new executable";
+        let digest: String = Sha256::digest(update)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(verify_cli_checksum(update, &"0".repeat(64)).is_err());
+        assert_eq!(std::fs::read(&exe).unwrap(), b"previous kit");
+        verify_cli_checksum(update, &digest).unwrap();
+        activate_cli_update(&exe, update).unwrap();
+        activate_cli_update(&exe, update).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), update);
+        assert_eq!(std::fs::read(&infer).unwrap(), b"infer");
+        assert_eq!(
+            std::fs::read(hidden.join("tools/plugins/test.wasm")).unwrap(),
+            b"plugin"
+        );
+        assert!(hidden.join("infer/config").is_dir());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

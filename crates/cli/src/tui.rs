@@ -620,14 +620,14 @@ pub fn server_dashboard(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) -
 
 fn draw_server(frame: &mut Frame, snapshot: &crate::server::Snapshot, selected: usize) {
     let areas = Layout::vertical([
-        Constraint::Length(5),
+        Constraint::Length(7),
         Constraint::Percentage(35),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
     .split(frame.area());
     let header = format!(
-        "Kit {} · {} · {}\nUptime {}s · read-only {} · timeout {}s · {} active\nAllowlist: {} · roots: {}",
+        "Kit {} · {} · {}\nUptime {}s · read-only {} · timeout {}s · {} active\nAllowlist: {} · roots: {}\nExecutable: {}\nData: {}",
         env!("CARGO_PKG_VERSION"),
         safe(&snapshot.endpoint),
         snapshot.status,
@@ -644,7 +644,9 @@ fn draw_server(frame: &mut Frame, snapshot: &crate::server::Snapshot, selected: 
             "no filesystem root configured".into()
         } else {
             snapshot.roots.join(", ")
-        }
+        },
+        safe(&snapshot.executable.display().to_string()),
+        safe(&snapshot.data_root.display().to_string()),
     );
     frame.render_widget(
         Paragraph::new(

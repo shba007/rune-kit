@@ -13,20 +13,98 @@ pub fn managed_root() -> io::Result<PathBuf> {
     let home = dirs::home_dir()
         .filter(|p| p.is_absolute())
         .ok_or_else(|| io::Error::other("Cannot resolve user home"))?;
-    let destination = home.join("rune/tools");
-    if let Some(data) = dirs::data_dir() {
-        migrate(&data.join("rune-kit"), &destination)?;
+    default_root(&home, dirs::data_dir().as_deref())
+}
+
+pub fn installation_root() -> io::Result<PathBuf> {
+    dirs::home_dir()
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join(".rune"))
+        .ok_or_else(|| io::Error::other("Cannot resolve user home"))
+}
+fn default_root(home: &Path, data: Option<&Path>) -> io::Result<PathBuf> {
+    let destination = home.join(".rune/tools");
+    let visible = home.join("rune/tools");
+    let mut sources = vec![visible.clone()];
+    // A prior completed migration consumed the platform directory. Its retained
+    // originals may be stale; never import them over the current visible tree.
+    if !visible.join(".legacy-migration-complete").is_file()
+        && let Some(data) = data
+    {
+        let legacy = data.join("rune-kit");
+        if legacy != visible {
+            sources.push(legacy);
+        }
     }
+    migrate_sources(&sources, &destination)?;
+    std::fs::create_dir_all(&destination)?;
     Ok(destination)
+}
+fn marker(source: &Path, destination: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash: String = Sha256::digest(source.to_string_lossy().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    destination.join(format!(".migration-{hash}.complete"))
+}
+fn migrate_sources(sources: &[PathBuf], destination: &Path) -> io::Result<()> {
+    for path in [destination, destination.parent().unwrap_or(destination)] {
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(io::Error::other("Migration refuses symbolic links"));
+        }
+    }
+    let mut planned = Vec::new();
+    let mut active = Vec::new();
+    for source in sources {
+        if source == destination || !source.exists() || marker(source, destination).is_file() {
+            continue;
+        }
+        if std::fs::symlink_metadata(source)?.file_type().is_symlink() {
+            return Err(io::Error::other("Migration refuses symbolic links"));
+        }
+        for name in [
+            "plugins",
+            "skills",
+            "_bin",
+            "cache",
+            "_cache",
+            "installed.json",
+            "installed_skills.json",
+        ] {
+            collect(&source.join(name), &destination.join(name), &mut planned)?;
+        }
+        active.push(source);
+    }
+    // Preflight every source and duplicate destination before publishing any file.
+    let mut destinations = std::collections::HashMap::<PathBuf, PathBuf>::new();
+    for (from, to) in &planned {
+        if let Some(previous) = destinations.insert(to.clone(), from.clone())
+            && std::fs::read(previous)? != std::fs::read(from)?
+        {
+            return Err(io::Error::other(format!(
+                "Conflicting legacy copies for {}; originals retained",
+                to.display()
+            )));
+        }
+        if to.exists() && std::fs::read(from)? != std::fs::read(to)? {
+            return Err(io::Error::other(format!(
+                "Migration conflict at {}; original retained at {}",
+                to.display(),
+                from.display()
+            )));
+        }
+    }
+    for source in active {
+        migrate(source, destination)?;
+    }
+    Ok(())
 }
 
 /// Copy only known managed entries; originals remain available for recovery.
 /// Existing identical files are accepted. Conflicts fail without overwriting.
 pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
-    if source == destination
-        || destination.join(".legacy-migration-complete").is_file()
-        || !source.exists()
-    {
+    if source == destination || marker(source, destination).is_file() || !source.exists() {
         return Ok(());
     }
     let mut files = Vec::new();
@@ -34,6 +112,8 @@ pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
         "plugins",
         "skills",
         "_bin",
+        "cache",
+        "_cache",
         "installed.json",
         "installed_skills.json",
     ] {
@@ -89,7 +169,7 @@ pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
     }
     std::fs::create_dir_all(destination)?;
     std::fs::write(
-        destination.join(".legacy-migration-complete"),
+        marker(source, destination),
         b"Original legacy storage retained.\n",
     )?;
     Ok(())
@@ -168,7 +248,7 @@ mod tests {
         .unwrap();
         migrate(&old, &new).unwrap();
         assert_eq!(std::fs::read(new.join("plugins/two")).unwrap(), b"two");
-        assert!(new.join(".legacy-migration-complete").exists());
+        assert!(marker(&old, &new).exists());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -189,5 +269,102 @@ mod tests {
         std::fs::remove_file(new.join("installed.json")).unwrap();
         migrate(&old, &new).unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod hidden_root_tests {
+    use super::*;
+    #[test]
+    fn visible_tree_metadata_caches_and_external_paths_survive_repeated_migration() {
+        let temp = std::env::temp_dir().join(format!("kit hidden home {}", std::process::id()));
+        let old = temp.join("rune/tools");
+        std::fs::create_dir_all(old.join("plugins")).unwrap();
+        std::fs::create_dir_all(old.join("_bin/git/1")).unwrap();
+        std::fs::create_dir_all(temp.join(".rune/infer/config")).unwrap();
+        std::fs::write(old.join("plugins/plugin.wasm"), b"plugin").unwrap();
+        std::fs::write(old.join("_bin/git/1/git"), b"cached helper").unwrap();
+        let metadata=br#"{"plugins":{"p":{"binary_path":"plugins/plugin.wasm","default_params":{"project":"/external/projects","model":"/external/models/model.bin"}}}}"#;
+        std::fs::write(old.join("installed.json"), metadata).unwrap();
+        std::fs::write(temp.join(".rune/rune-infer"), b"infer").unwrap();
+        std::fs::write(temp.join("rune/project.txt"), b"unrelated").unwrap();
+        let new = default_root(&temp, None).unwrap();
+        assert_eq!(new, temp.join(".rune/tools"));
+        for _ in 0..2 {
+            default_root(&temp, None).unwrap();
+        }
+        assert_eq!(std::fs::read(new.join("installed.json")).unwrap(), metadata);
+        assert_eq!(
+            std::fs::read(new.join("plugins/plugin.wasm")).unwrap(),
+            b"plugin"
+        );
+        assert_eq!(
+            std::fs::read(new.join("_bin/git/1/git")).unwrap(),
+            b"cached helper"
+        );
+        assert_eq!(
+            std::fs::read(temp.join(".rune/rune-infer")).unwrap(),
+            b"infer"
+        );
+        assert_eq!(
+            std::fs::read(temp.join("rune/project.txt")).unwrap(),
+            b"unrelated"
+        );
+        assert!(old.join("plugins/plugin.wasm").exists());
+        assert!(!new.join("project.txt").exists());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+    #[test]
+    fn fresh_defaults_and_older_platform_sources_share_hidden_root() {
+        let temp = std::env::temp_dir().join(format!("kit platform hidden {}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let data = temp.join("platform-data");
+        let legacy = data.join("rune-kit");
+        std::fs::create_dir_all(legacy.join("skills")).unwrap();
+        std::fs::write(legacy.join("skills/readme.md"), b"skill").unwrap();
+        let new = default_root(&temp, Some(&data)).unwrap();
+        assert_eq!(
+            std::fs::read(new.join("skills/readme.md")).unwrap(),
+            b"skill"
+        );
+        assert!(legacy.join("skills/readme.md").exists());
+        default_root(&temp, Some(&data)).unwrap();
+        let fresh = temp.join("fresh home");
+        std::fs::create_dir_all(&fresh).unwrap();
+        assert_eq!(
+            default_root(&fresh, None).unwrap(),
+            fresh.join(".rune/tools")
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+    #[test]
+    fn divergent_legacy_registries_fail_before_copying_and_completed_old_backups_are_not_reimported()
+     {
+        let temp = std::env::temp_dir().join(format!("kit multisource {}", std::process::id()));
+        let old = temp.join("rune/tools");
+        let data = temp.join("platform");
+        let legacy = data.join("rune-kit");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(old.join("installed.json"), b"current registry").unwrap();
+        std::fs::write(legacy.join("installed.json"), b"old registry").unwrap();
+        assert!(default_root(&temp, Some(&data)).is_err());
+        assert!(!temp.join(".rune/tools/installed.json").exists());
+        // Prior releases explicitly left this marker after validating the platform copy.
+        std::fs::write(
+            old.join(".legacy-migration-complete"),
+            b"validated original migration",
+        )
+        .unwrap();
+        let new = default_root(&temp, Some(&data)).unwrap();
+        assert_eq!(
+            std::fs::read(new.join("installed.json")).unwrap(),
+            b"current registry"
+        );
+        assert_eq!(
+            std::fs::read(legacy.join("installed.json")).unwrap(),
+            b"old registry"
+        );
+        std::fs::remove_dir_all(temp).unwrap();
     }
 }

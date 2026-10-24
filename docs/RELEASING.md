@@ -1,111 +1,90 @@
-# Owner-reviewed release flow
+# Releasing Rune Kit
 
-Agents edit/test locally and leave changes unstaged/uncommitted. The human owner
-commits and pushes development changes, reviews/merges preparation PRs and
-promotes develop to main. Only GitHub Actions creates release preparation commits,
-pushes its branch, publishes tags/releases and builds/uploads artifacts. No AI
-service generates notes. Product source/runtime behavior is never changed by a
-release-preparation commit beyond the version/lock/changelog metadata.
+Agents implement and test locally, leaving changes unstaged and uncommitted.
+Agents never commit, push, merge, tag, publish or dispatch publishing workflows,
+and never author/edit CHANGELOG entries. The owner commits development changes;
+GitHub Actions generates release files. No AI service generates release prose.
 
-## Events and owner steps
+## Owner and workflow sequence
 
-1. Owner pushes reviewed semantic commits to **develop**. Only develop pushes
-   trigger Rust CI, including merge and release bookkeeping commits. PR events
-   and release-branch pushes do not duplicate integration/preparation.
-2. Ubuntu and Windows run build, workspace tests, Clippy and formatting. Current
-   changelog extraction is checked. Preparation runs only after these pass.
-3. Preparation checks out develop and verifies HEAD equals the tested event SHA.
-   Rust xtask reads reviewed history with git-conventional, computes semver,
-   writes workspace/lock versions, substantive changelog and the consumed source
-   set in .release-preparation.json. Generated files are validated in this run
-   with locked metadata, release-check and release utility tests.
-4. A final remote develop SHA check suppresses stale preparation if development
-   arrived during the job; its newer validated run prepares the updated release.
-   One release/update-version branch/PR targets develop. Title and generated
-   commit are **ci(release): update version**. GITHUB_TOKEN handles PR API calls;
-   GH_TOKEN pushes the branch. No releasable changes produces no new PR. Re-runs
-   reuse the source set and fixed branch, not duplicate versions/sections/PRs.
-5. Owner reviews notes/version/diff and successful checks in the originating
-   preparation run, then merges the PR into develop (merge or squash supported).
-   PR-created workflow runs are intentionally unnecessary. Merging into develop
-   alone does not publish. Routine preparation commits are tested normally and
-   the recorded source set prevents another release for the same changes.
-6. Owner opens develop → main promotion PR and chooses **Create a merge commit**,
-   preserving ancestry. Do NOT squash or rebase promotion. Set main merge title
-   exactly **ci(release): publish vX.Y.Z**, matching the prepared workspace version.
-7. Main's release action runs checks, verifies that marker, merge ancestry and
-   prepared source/version/note hash, extracts the exact CHANGELOG section and
-   creates the matching tag/release using GH_TOKEN. It does not generate fresh
-   release prose. Existing published releases remain unchanged; safe retries
-   validate prepared metadata before publishing a missing release.
-8. The PAT/App-authenticated release.published event starts deploy.yml, builds
-   tagged platform archives and uploads assets/checksums/attestations. Owner
-   verifies all target jobs and the actual installable downloads.
+1. Push reviewed conventional commits to develop. Only develop pushes start
+   integration/preparation, including merge and release bookkeeping commits.
+   PR events and release-branch pushes do not duplicate this pipeline.
+2. Ubuntu and Windows validate build, tests, Clippy, formatting and extraction.
+3. After success, preparation verifies the tested develop SHA, runs the pinned
+   git-cliff package, synchronizes manifests/lockfile and generates CHANGELOG.
+   Generated files and preparation metadata are validated in that same run.
+4. One release/update-version branch and PR targeting develop is reused. Its
+   title and generated commit remain ci(release): update version. GITHUB_TOKEN
+   performs PR API operations; GH_TOKEN pushes the branch. A final remote SHA
+   check suppresses stale preparation when new development arrives.
+5. Review the generated notes/version/source and successful originating run.
+   Merge preparation into develop (merge or squash supported). This alone does
+   not publish. Recorded consumed source IDs stop repeat bumps/preparation loops.
+6. Promote develop to main using a MERGE COMMIT preserving ancestry; do not
+   squash/rebase promotion. There is NO required promotion title or marker.
+7. Every main push runs validation and checks prepared version, reachable source
+   history, package-calculated version, exact note hash and tag integrity. Valid
+   unpublished versions publish. Already published versions are validated no-ops;
+   missing/invalid preparation fails clearly. Release bodies extract the exact
+   prepared CHANGELOG section, never regenerate prose from history.
+8. Publication uses GH_TOKEN so release.published starts artifact builds. Every
+   artifact job checks the tag and release body against the same extractor before
+   building. Verify all platform assets/checksums after publication.
 
-A last-moment develop push can race any pre-push check; the next validated run
-updates the one PR. Publication still refuses stale preparation against promoted
-history. Protect main and develop and review the prepared source/notes before
-promotion; no merge into main should bypass the owner step.
+Run 40061282852 failed after its platform checks: promoted head ad8c17d had
+subject ci(release): update version while the old gate demanded
+ci(release): publish v0.6.0. The title gate is removed. Local release-check accepts
+that prepared 0.6.0 history without publication. Raw authenticated job logs were
+unavailable; the mismatch was checked against the run SHA, commit and workflow.
 
-## Rules and previews
+## Package policy and local previews
 
-All valid semantic types are eligible, including docs/refactor/style/test/build/
-ci/chore/revert/custom. feat/fix/perf keep the repository's existing minor/patch
-rules; breaking changes before 1.0 advance minor, after 1.0 advance major.
-Maintenance uses patch. Routine release/version/autoformat bookkeeping, invalid
-messages and private/placeholder planning prose are excluded. Public commit
-summaries plus explicit Release-note:/Migration: body lines supply deterministic
-notes; reviewed unpublished migration prose is retained. Published sections,
-commits/tags/releases are preserved. The greatest published tag reachable from
-main supplies the baseline; source IDs and exact note hashes prevent loops.
-
-For this HTTP transport migration, use a breaking conventional subject, e.g.
-**feat!: serve local MCP over HTTP with an attached dashboard**. The planned
-minimum compatible release is **0.6.0** after owner-driven preparation; 0.5.0
-remains the current manifest until CI calculates the next release. The new
-unpublished changelog section records the migration for preparation to retain.
-
-Read-only local commands:
+Pinned git-cliff-core =2.14.2 interprets conventional commits, computes versions,
+and renders changelogen-style grouped notes using cliff.toml. Rust integration
+only selects reachable reviewed history, synchronizes files and validates state.
+Features advance minor even before 1.0; breaking changes advance minor before
+1.0 and major afterwards; fixes and semantic maintenance/custom types advance
+patch. Routine release/version/autoformat bookkeeping, invalid messages and
+private planning prose are excluded. Notes include scope, linked commits/PRs,
+comparison links, breaking changes and contributors where present in history.
+No independent handwritten semantic bump or notes renderer remains.
 
 ```sh
 cargo xtask release-plan
 cargo xtask release-example
+cargo xtask release-check
 cargo xtask release-notes 0.6.0
 cargo test --locked -p xtask
 ```
 
-release-plan reflects committed history only. An unchanged published tree needs
-no release even when local edits exist. release-example prints a deterministic
-synthetic breaking migration preview without changing Git/files. --apply is
-reserved for authorized CI/owner, never used by an agent on the working repo.
-Missing/duplicate/mismatched/empty/placeholder sections fail extraction. Rust
-uses git-conventional, semver and toml_edit; the old Cocogitto JSON template was
-removed. Cocogitto commit-message validation may still be used by owner hooks.
+These commands do not mutate Git or release files. release-plan uses committed
+history only. release-example is a deterministic synthetic 0.6.0-to-0.7.0 feature
+preview, not a promise about the next release. Repeated preparation of consumed
+history does not bump again. --apply is reserved for authorized CI/owner, never
+agents on the working repository. GIT_CLIFF_* environment overrides are rejected
+so local and CI policy cannot silently diverge. Missing, duplicate, empty or
+placeholder version sections fail. Historical sections/tags/releases are retained.
+The existing reviewed 0.6.0 preparation remains intact rather than being rewritten
+solely to change generators; subsequent preparation uses git-cliff.
 
-## Required GitHub configuration
+## GitHub settings and authentication
 
-- GITHUB_TOKEN job permissions: Contents write and Pull requests write for
-  preparation; allow Actions to create PRs in repository/organization settings.
-- GH_TOKEN secret: owner-managed PAT/App with repository Contents write for
-  release/update-version branch pushes and release publication. PR API calls do
-  not depend on the PAT having Pull requests write. Keep token values private.
-- Permit third-party Actions and bot writes on the dedicated release branch.
-  Verify the originating preparation run and develop integration checks before
-  promotion. Do not require a pull_request-only check on release/update-version:
-  those events intentionally do not run CI. Permit merge commits on main;
-  squash-only promotion breaks consumed history.
-- GitHub normally suppresses downstream workflows from GITHUB_TOKEN-created
-  events. Publishing with GH_TOKEN preserves release.published artifact dispatch.
-  No dispatch workaround or agent-owned publishing step is used. Actual remote
-  event chaining is NOT CERTAIN until the owner commits/pushes/promotes this flow.
+- Enable Actions to create PRs; preparation needs GITHUB_TOKEN Contents write and
+  Pull requests write. PR creation does not need PAT Pull requests write.
+- GH_TOKEN must be an owner-managed PAT/App token with repository Contents write
+  for release-branch pushes and publication. Never expose its value.
+- Permit bot writes to the dedicated branch and owner merge commits on main.
+  Require develop integration checks; do not require PR-only checks that this
+  intentionally develop-only pipeline does not run.
+- Default-token-created events normally suppress downstream workflows. GH_TOKEN
+  publication is required for release.published artifact jobs. Artifact event
+  chaining remains NOT CERTAIN until the owner runs the promoted workflow.
+- Protect develop/main and review prepared source/notes. A racing develop push
+  updates the same PR in its next validated run; main validation rejects stale
+  preparation containing extra unconsumed releasable history.
 
-Minimal POSIX/PowerShell installers remain necessary before Rust is installed;
-end users need no Rust toolchain. Actions YAML, GitHub CLI and jq remain workflow
-wiring; new release/protocol validation utilities are Rust. Shared binary/data
-roots and migration logic are unchanged.
-
-Authentication/event references checked for this implementation:
-- [Create Pull Request v8 token/branch-token inputs](https://github.com/peter-evans/create-pull-request/blob/v8/action.yml)
-- [GitHub workflow event/token behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)
-These confirm the static event model; they do not verify this repository's secrets
-or a live publication run.
+Minimal POSIX/PowerShell bootstrap installers remain because end users need no
+Rust toolchain. Actions YAML, GitHub CLI and jq remain workflow wiring. Repository
+release/protocol/migration validation uses Rust; no Python/JavaScript release
+helper is introduced.

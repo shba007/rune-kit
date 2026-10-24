@@ -54,6 +54,8 @@ pub struct Snapshot {
     pub allowed_tools: Vec<String>,
     pub roots: Vec<String>,
     pub timeout: u64,
+    pub executable: std::path::PathBuf,
+    pub data_root: std::path::PathBuf,
     pub active: Vec<Call>,
     pub recent: VecDeque<Call>,
 }
@@ -676,6 +678,8 @@ pub async fn serve(router: McpRouter, options: Options) -> Result<(), Box<dyn st
         allowed_tools: options.allowed_tools,
         roots: options.roots,
         timeout: options.timeout,
+        executable: std::env::current_exe()?,
+        data_root: rune_kit_core::paths::managed_root()?,
         active: Vec::new(),
         recent: VecDeque::new(),
     }));

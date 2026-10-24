@@ -25,18 +25,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify owner-promoted release matches prepared history and notes
         run: |
-          test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required to publish a release that triggers artifact publication.' >&2; exit 1; }
           mkdir -p target
-          VERSION=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rune-kit-cli") | .version')
-          SUBJECT=$(git log -1 --format=%s)
-          test "$SUBJECT" = "ci(release): publish v$VERSION" || { echo "Main promotion must use merge title ci(release): publish v$VERSION" >&2; exit 1; }
-          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -ge 3 || { echo 'Promote develop using a merge commit, not squash/rebase.' >&2; exit 1; }
           cargo xtask release-check > target/release-check.json
           VERSION=$(jq -r .version target/release-check.json)
+          READY=$(jq -r .ready target/release-check.json)
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          cargo xtask release-notes "$VERSION" --output target/release-notes.md
-      - name: Publish matching tag and release using the prepared notes
+          echo "RELEASE_READY=$READY" >> "$GITHUB_ENV"
+          if [ "$READY" = true ]; then
+            cargo xtask release-notes "$VERSION" --output target/release-notes.md
+          else
+            jq -r .reason target/release-check.json
+          fi
+      - name: Check for an existing publication without publishing credentials
+        if: env.RELEASE_READY == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$VERSION" > target/existing-release.json 2> target/release-lookup-error.txt; then
+            jq '{release: .}' target/existing-release.json > target/existing-release-event.json
+            GITHUB_EVENT_PATH=target/existing-release-event.json cargo xtask release-artifact-check
+            echo 'RELEASE_READY=false' >> "$GITHUB_ENV"
+            echo "Release v$VERSION is already published; validated no-op."
+          elif ! grep -q 'HTTP 404' target/release-lookup-error.txt; then
+            cat target/release-lookup-error.txt >&2
+            exit 1
+          fi
+      - name: Publish matching tag and release using the prepared notes
+        if: env.RELEASE_READY == 'true'
+        run: |
+          test -n "$GH_TOKEN" || { echo 'GH_TOKEN is required for release/artifact events.' >&2; exit 1; }
           if gh release view "v$VERSION" > /dev/null 2>&1; then
             echo "Release v$VERSION already exists; leaving its notes and assets unchanged."
           else

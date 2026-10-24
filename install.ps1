@@ -16,7 +16,7 @@
     $base = Setting 'RUNE_KIT_BASE_URL' ''
     $userHome = [Environment]::GetFolderPath('UserProfile')
     if ([string]::IsNullOrWhiteSpace($userHome)) { throw 'Cannot resolve user home.' }
-    $installDir = [IO.Path]::GetFullPath((Setting 'RUNE_KIT_INSTALL_DIR' (Join-Path $userHome 'rune')))
+    $installDir = [IO.Path]::GetFullPath((Setting 'RUNE_KIT_INSTALL_DIR' (Join-Path $userHome '.rune')))
     $release = $null
     if ($base) {
         if ($version -eq 'latest') { throw 'Set RUNE_KIT_VERSION when using a mirror.' }
@@ -125,13 +125,16 @@
 
         if ((Setting 'RUNE_KIT_NO_MODIFY_PATH' '0') -ne '1') {
             $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-            $entries = @($userPath -split ';' | Where-Object { $_ })
-            if (($entries | ForEach-Object { $_.TrimEnd('\') }) -notcontains $installDir.TrimEnd('\')) {
-                [Environment]::SetEnvironmentVariable('Path', (($entries + $installDir) -join ';'), 'User')
+            function NormalizedPath($entry) {
+                try { return [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($entry)).TrimEnd('\','/').ToLowerInvariant() }
+                catch { return $entry.TrimEnd('\','/').ToLowerInvariant() }
             }
-            if ((@($env:Path -split ';') | ForEach-Object { $_.TrimEnd('\') }) -notcontains $installDir.TrimEnd('\')) {
-                $env:Path = "$installDir;$env:Path"
-            }
+            $key = NormalizedPath $installDir
+            $entries = @($userPath -split ';' | Where-Object { $_ -and (NormalizedPath $_) -ne $key })
+            # Keep ~/rune on PATH: Infer may still be installed there. Put new Kit first.
+            [Environment]::SetEnvironmentVariable('Path', ((@($installDir) + $entries) -join ';'), 'User')
+            $processEntries = @($env:Path -split ';' | Where-Object { $_ -and (NormalizedPath $_) -ne $key })
+            $env:Path = ((@($installDir) + $processEntries) -join ';')
             Write-Host 'User PATH updated. Restart other terminals and MCP clients to use it.'
         } else { Write-Host "PATH unchanged. Add $installDir yourself or use the full executable path." }
         Write-Host "Installed: $destination ($reported)"

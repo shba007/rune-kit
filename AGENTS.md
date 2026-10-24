@@ -136,7 +136,7 @@ description = "Stream extraction"
 
 1. **Storage Cache:** External tools are maintained in a shared, host-managed cache:
    ```text
-   ~/rune/tools/_bin/
+   ~/.rune/tools/_bin/
    ├── ffmpeg/
    │   └── 6.1.1/
    │       ├── ffmpeg (executable, mode 0755)
@@ -177,7 +177,7 @@ In addition to executable plugins, `rune-kit` natively manages **Skills**—reus
 | :--- | :--- | :--- |
 | **Nature** | Executable MCP servers (WASM or Native) | Declarative markdown, prompts, instructions |
 | **Execution** | Extism WASM runtime / OS process | Non-executable static content |
-| **Storage** | `~/rune/tools/plugins/` | `~/rune/tools/skills/<name>/` |
+| **Storage** | `~/.rune/tools/plugins/` | `~/.rune/tools/skills/<name>/` |
 | **Lockfile** | `installed.json` (`Lockfile`) | `installed_skills.json` (`SkillLockfile`) |
 | **Registry Schema** | `RegistryPluginSummary` | `RegistrySkillSummary` (includes `author`, `tags`) |
 
@@ -229,7 +229,7 @@ During `rune-kit install <target>`:
 2. `McpRouter` decodes the namespace prefix and routes the call to the corresponding `PluginInstance`:
    - **WASM Route:** Invokes guest exports (`mcp_call_tool`, `mcp_read_resource`, `mcp_get_prompt`). If native work is required, WASM dispatches to the companion binary via `host_sidecar_exec`.
    - **Native Route:** Sends JSON-RPC commands directly over stdio pipes to the running standalone `NativeSidecar` process and reads output lines.
-3. Formatted JSON-RPC responses are returned to the client through stdout.
+3. Public JSON-RPC responses return over HTTP; only private native plugin responses use pipes.
 
 ### 6.3 Native Process Lifecycle (Companion and Standalone)
 
@@ -272,7 +272,7 @@ Agents implement/test locally and leave every change unstaged and uncommitted. D
 
 GitHub Actions is authorized to calculate versions, update manifests/lockfiles/changelogs, commit/push the dedicated release/update-version branch, and open/update its single PR targeting develop. Successful checks precede preparation. The PR title and automation commit are `ci(release): update version`. Actions publishes tags/releases/artifacts only after the owner promotes the prepared release to main. No AI service belongs in this flow.
 
-See docs/RELEASING.md for the complete develop-to-main sequence, authentication, merge strategy, and Rust dry-run commands. Promotion to main must use a merge commit preserving ancestry (no squash/rebase), with title `ci(release): publish vX.Y.Z`. Merging preparation into develop alone does not publish. Main publication is guarded by preparation metadata rather than a commit-message marker.
+See docs/RELEASING.md for the complete develop-to-main sequence, authentication, merge strategy, and Rust dry-run commands. Promotion to main must use a merge commit preserving ancestry (no squash/rebase), without any required commit title. Merging preparation into develop alone does not publish. Main publication is guarded by preparation metadata rather than a commit-message marker.
 
 Prefer Rust for repository utilities and protocol/installer test harnesses. Bootstrap install.ps1/install.sh remain thin and require no end-user Rust installation. Public change descriptions must contain substantive user-facing behavior, compatibility and migration; exclude internal planning labels and bot bookkeeping. Publication extracts the exact version section generated during preparation and never rewrites published history.
 
@@ -287,5 +287,7 @@ Only develop pushes trigger integration/preparation, including merge/release
 commits; PR events and release branch pushes do not. Validate generated release
 files in the preparation run. Use GITHUB_TOKEN for PR API operations, GH_TOKEN
 for release branch pushes and publication events. The Rust release utility uses
-git-conventional, semver and toml_edit; valid semantic maintenance/custom commits
+pinned git-cliff-core 2.14.2 with cliff.toml, semver validation and toml_edit; valid semantic maintenance/custom commits
 are releasable too. No AI service generates release prose. See docs/RELEASING.md.
+
+Agents must not author or edit CHANGELOG entries. CI generates substantive notes from reviewed conventional commits using pinned git-cliff and cliff.toml. Local release-example/release-plan are read-only previews. Main publication validates prepared history and exact notes on every push; no promotion title marker is required.

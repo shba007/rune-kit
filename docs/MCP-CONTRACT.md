@@ -12,7 +12,7 @@ installed name/local artifact. Default **http://127.0.0.1:47601/mcp**. Optional
 --port/--bind allow another loopback address only. --port 0 is useful for tests;
 the actual endpoint is printed on stderr. Missing/broken payloads fail startup
 rather than silently removing tools. An empty installation serves empty discovery.
-Install/update/list/self-update and shared ~/rune/tools storage remain available.
+Install/update/list/self-update and shared ~/.rune/tools storage remain available.
 Restart the server after changing installed plugins or server configuration.
 
 Interactive serve opens the attached TUI. --headless suppresses it; non-interactive

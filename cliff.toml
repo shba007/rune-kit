@@ -1,0 +1,73 @@
+# git-cliff-core is pinned in xtask/Cargo.toml. Rendering follows changelogen's layout.
+[changelog]
+header = ""
+footer = ""
+trim = true
+render_always = false
+format = true
+body = """
+## {{ version }}
+
+[{{ previous.version }}...{{ version }}](https://github.com/shba007/rune-kit/compare/{{ previous.version }}...{{ version }})
+{% for group, entries in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in entries %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }}{% if commit.breaking %} (**breaking**){% endif %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/shba007/rune-kit/commit/{{ commit.id }}))
+{% endfor %}
+{% endfor %}
+{% set breaking = commits | filter(attribute="breaking", value=true) %}
+{% if breaking | length > 0 %}
+### Breaking Changes
+{% for commit in breaking %}
+- {{ commit.breaking_description | default(value=commit.message) }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/shba007/rune-kit/commit/{{ commit.id }}))
+{% endfor %}
+{% endif %}
+{% set authors = commits | filter(attribute="author.name") | map(attribute="author.name") | unique %}
+{% if authors | length > 0 %}
+### Contributors
+{% for author in authors %}
+- {{ author }}
+{% endfor %}
+{% endif %}
+"""
+postprocessors = [
+  { pattern = '(?i)\b(?:KIT|KF|INF|WP|M|K|L|R)-?[0-9]+\b', replace = '' },
+  { pattern = '(?i)\b(?:cycle|milestone)[ -]*[0-9]+\b', replace = '' },
+]
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+require_conventional = false
+split_commits = false
+protect_breaking_commits = false
+filter_commits = false
+tag_pattern = '^v[0-9]+\.[0-9]+\.[0-9]+'
+sort_commits = "oldest"
+commit_preprocessors = [
+  { pattern = '\(#([0-9]+)\)', replace = '([#$1](https://github.com/shba007/rune-kit/pull/$1))' },
+]
+commit_parsers = [
+  { message = '^(?:ci|chore)\((?:release|version)\):', skip = true },
+  { message = '(?i)^[^\n]*(?:update version|bump version|autoformat|apply code fixes|\bTODO\b|\bTBD\b|placeholder|\bcycle\b|\bmilestone\b|\b(?:KIT|KF|INF|WP|M|K|L|R)-?[0-9]+\b)', skip = true },
+  { message = '^feat', group = '<!-- 01 --> Enhancements' },
+  { message = '^fix', group = '<!-- 02 --> Fixes' },
+  { message = '^docs', group = '<!-- 03 --> Documentation' },
+  { message = '^refactor', group = '<!-- 04 --> Refactors' },
+  { message = '^perf', group = '<!-- 05 --> Performance' },
+  { message = '^test', group = '<!-- 06 --> Tests' },
+  { message = '^build', group = '<!-- 07 --> Build' },
+  { message = '^ci', group = '<!-- 08 --> CI' },
+  { message = '^chore', group = '<!-- 09 --> Chore' },
+  { message = '.*', group = '<!-- 10 --> Maintenance' },
+]
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = false
+initial_tag = "0.1.0"
+# All other eligible semantic types use the package's patch behavior.
+# Deliberately no no_increment_regex and no forced bump_type.
+
+[remote]
+offline = true

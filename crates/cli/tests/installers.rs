@@ -300,7 +300,7 @@ fn posix_default_shared_root_and_path_once() {
     let case = Case::new();
     case.package(false, false);
     let home = case.root.join("home with spaces");
-    let shared = home.join("rune");
+    let shared = home.join(".rune");
     fs::create_dir_all(shared.join("infer")).unwrap();
     fs::write(shared.join("rune-infer"), b"infer").unwrap();
     fs::write(shared.join("infer/config"), b"configuration").unwrap();
@@ -343,7 +343,7 @@ fn posix_default_shared_root_and_path_once() {
     assert!(result.status.success());
     let expected = support::output(
         Command::new(shell)
-            .args(["-c", "printf '%s' \"$HOME/rune\""])
+            .args(["-c", "printf '%s' \"$HOME/.rune\""])
             .env("HOME", home.to_str().unwrap().replace('\\', "/")),
     );
     assert_eq!(
@@ -352,4 +352,78 @@ fn posix_default_shared_root_and_path_once() {
             .count(),
         1
     );
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_default_hidden_install_deduplicates_path_and_preserves_visible_infer() {
+    let case = Case::new();
+    case.package(true, false);
+    let home = case.root.join("home's spaces");
+    let hidden = home.join(".rune");
+    let visible = home.join("rune");
+    fs::create_dir_all(hidden.join("infer/config")).unwrap();
+    fs::create_dir_all(&visible).unwrap();
+    fs::write(visible.join("rune-kit.exe"), b"original kit retained").unwrap();
+    fs::write(visible.join("rune-infer.exe"), b"visible infer").unwrap();
+    fs::write(hidden.join("rune-infer.exe"), b"hidden infer").unwrap();
+    let path_record = case.root.join("user-path.txt");
+    fs::write(
+        &path_record,
+        format!(
+            "{};{};{};C:\\Windows",
+            visible.display(),
+            hidden.display(),
+            hidden.display()
+        ),
+    )
+    .unwrap();
+    let ps_quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "''"));
+    // Execute the real installer; isolate only OS profile/registry APIs in a copy.
+    let script=fs::read_to_string(support::root().join("install.ps1")).unwrap()
+        .replace("[Environment]::GetFolderPath('UserProfile')",&ps_quote(&home))
+        .replace("[Environment]::GetEnvironmentVariable('Path', 'User')",&format!("([IO.File]::ReadAllText({}))",ps_quote(&path_record)))
+        .replace("[Environment]::SetEnvironmentVariable('Path', ((@($installDir) + $entries) -join ';'), 'User')",&format!("[IO.File]::WriteAllText({}, ((@($installDir) + $entries) -join ';'))",ps_quote(&path_record)));
+    assert!(!script.contains("[Environment]::SetEnvironmentVariable('Path'"));
+    let copied = case.root.join("isolated installer.ps1");
+    fs::write(&copied, script).unwrap();
+    for _ in 0..2 {
+        let original = case.command(true, None);
+        let mut command = Command::new(powershell());
+        command
+            .args(["-NoProfile", "-NonInteractive", "-File"])
+            .arg(&copied);
+        for (key, value) in original.get_envs() {
+            if let Some(value) = value {
+                command.env(key, value);
+            }
+        }
+        command
+            .env_remove("RUNE_KIT_INSTALL_DIR")
+            .env("RUNE_KIT_NO_MODIFY_PATH", "0")
+            .env("USERPROFILE", &home);
+        let result = support::output(&mut command);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    assert!(hidden.join("rune-kit.exe").is_file());
+    assert_eq!(
+        fs::read(visible.join("rune-kit.exe")).unwrap(),
+        b"original kit retained"
+    );
+    assert_eq!(
+        fs::read(visible.join("rune-infer.exe")).unwrap(),
+        b"visible infer"
+    );
+    assert_eq!(
+        fs::read(hidden.join("rune-infer.exe")).unwrap(),
+        b"hidden infer"
+    );
+    let entries = fs::read_to_string(path_record).unwrap();
+    assert_eq!(entries.split(';').next().unwrap(), hidden.to_str().unwrap());
+    assert_eq!(entries.matches(hidden.to_str().unwrap()).count(), 1);
+    assert!(entries.contains(visible.to_str().unwrap()));
 }

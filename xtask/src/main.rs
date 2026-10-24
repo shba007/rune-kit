@@ -43,10 +43,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 print!("{notes}");
             }
         }
-        Some("release-check") => println!(
-            "{}",
-            serde_json::json!({"ready":release::check(root)?,"version":release::version(root)?})
-        ),
+        Some("release-check") => {
+            println!("{}", serde_json::to_string(&release::publication(root)?)?)
+        }
+        Some("release-artifact-check") => {
+            let event: serde_json::Value = serde_json::from_slice(&std::fs::read(
+                std::env::var_os("GITHUB_EVENT_PATH").ok_or("GITHUB_EVENT_PATH is required")?,
+            )?)?;
+            release::verify_artifact(root, &event)?;
+            println!("Artifact tag and release body match prepared notes");
+        }
         _ => {
             return Err(
                 "Use cargo xtask release-plan [--apply], release-notes VERSION, or release-check"

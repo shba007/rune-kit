@@ -109,7 +109,7 @@ curl -fsSL https://raw.githubusercontent.com/shba007/rune-kit/main/install.sh | 
 
 Windows installs `rune-kit.exe` in `%USERPROFILE%\rune` and adds
 that folder to your user PATH and the current PowerShell session. Linux/macOS
-install `rune-kit` in `~/rune`; the script adds the root once to `~/.profile` (set `RUNE_KIT_NO_MODIFY_PATH=1` to leave PATH unchanged).
+install `rune-kit` in `~/.rune`; the script adds the root once to `~/.profile` (set `RUNE_KIT_NO_MODIFY_PATH=1` to leave PATH unchanged).
 Re-running installs the selected release again. Downloads are verified before an
 existing executable is replaced. Stop active gateways before upgrading on Windows.
 
@@ -133,7 +133,7 @@ Linux/macOS require checksum sidecars, introduced with the renamed release.
 **Migration:** change MCP client commands from `rune` to `rune-kit` and restart
 terminals/clients after installing. No `rune` alias is installed and unrelated old
 executables are not deleted. Plugin, skill and cache data use the
-`~/rune/tools` folder. Legacy managed storage is copied on first use; originals remain available for recovery. Old installs can be removed
+`~/.rune/tools` folder. Legacy managed storage is copied on first use; originals remain available for recovery. Old installs can be removed
 manually after clients have switched. Self-update accepts both old and new archive
 binary names. HTTP clients need the planned 0.6.0+ release and the Streamable HTTP request contract below; the published 0.5.0 stdio release is not HTTP-compatible.
 
@@ -363,12 +363,12 @@ rune-kit self-update --version 0.2.1 --force
 
 ## File System & Storage Layout
 
-Rune Kit stores managed data under `~/rune/tools` on every platform. An absolute `RUNE_KIT_DATA_DIR` overrides this location. The default executable directory is `~/rune`, shared with Infer. Legacy platform data is copied on first use; originals remain intact and conflicts fail clearly.
+Rune Kit stores managed data under `~/.rune/tools` on every platform. An absolute `RUNE_KIT_DATA_DIR` overrides this location. The default executable directory is `~/.rune`, shared with Infer. Legacy platform data is copied on first use; originals remain intact and conflicts fail clearly.
 
 ### Directory Structure
 
 ```text
-<user-home>/rune/tools/
+<user-home>/.rune/tools/
 ├── installed.json                 # Lockfile tracking installed plugins, hashes, paths
 ├── installed_skills.json          # Lockfile tracking installed skills and file checksums
 ├── plugins/                       # Executable plugin binaries
@@ -574,7 +574,7 @@ Copyright (c) 2024 Shirsendu Bairagi.
 
 [![Contributors](https://contrib.rocks/image?repo=shba007/rune-kit)](https://github.com/shba007/rune-kit/graphs/contributors)
 
-Managed storage defaults to `~/rune/tools` (plugins in `plugins/`). Set an absolute `RUNE_KIT_DATA_DIR` to override it. Legacy platform data is copied on first use, with originals retained; conflicts stop migration. See [MCP contract](docs/MCP-CONTRACT.md) for the new request format.
+Managed storage defaults to `~/.rune/tools` (plugins in `plugins/`). Set an absolute `RUNE_KIT_DATA_DIR` to override it. Legacy platform data is copied on first use, with originals retained; conflicts stop migration. See [MCP contract](docs/MCP-CONTRACT.md) for the new request format.
 
 
 ## Terminal inventory
@@ -587,3 +587,15 @@ they do not monitor another process. See [dashboard controls](docs/TUI.md).
 ## Releases and contributor tooling
 
 Successful develop CI prepares one reviewed release/update-version PR. The owner merges it into develop, then promotes develop to main with a merge commit or fast-forward. Main automation publishes the prepared version and exact changelog notes; release publication triggers platform artifacts. Merging into develop alone does not publish. Agents leave changes unstaged and uncommitted. Rust-only preparation previews and the required token/settings are documented in [the release flow](docs/RELEASING.md).
+
+Hidden installation defaults: the executable is `<user-home>/.rune/rune-kit[.exe]`
+and managed plugins/state are `<user-home>/.rune/tools`. On first ordinary Kit
+command, known managed entries from `~/rune/tools` and older platform Kit storage
+are copied with verification. Originals remain; divergent destination data stops
+migration without overwrite. A completed visible-root migration takes precedence
+over its retained platform backup. Explicit absolute `RUNE_KIT_DATA_DIR` skips
+default migration. Installers retain old Kit/Infer binaries and Infer directories;
+remove old Kit copies only after validating the new installation. Windows PATH
+places the new root first while retaining the old root for Infer. POSIX adds a
+guarded profile entry. `self-update` verifies the archive checksum and replaces
+only the invoked executable, including custom installation locations.

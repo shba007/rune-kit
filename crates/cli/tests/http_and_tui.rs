@@ -307,6 +307,16 @@ fn interactive_dashboard_restores_terminal_after_empty_and_failed_discovery() {
         }
         let screen = String::from_utf8_lossy(&evidence);
         assert!(status.success(), "TUI process failed: {screen}");
+        if attached {
+            assert!(
+                screen.contains("Executable:"),
+                "Executable path missing: {screen}"
+            );
+            assert!(
+                screen.contains("Data:"),
+                "Resolved data path missing: {screen}"
+            );
+        }
         assert!(
             screen.contains(expected),
             "Missing state {expected}: {screen}"

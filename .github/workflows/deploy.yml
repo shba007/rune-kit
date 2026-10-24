@@ -65,6 +65,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Validate tag and exact prepared release notes
+        env:
+          CARGO_HUSKY_DONT_INSTALL_HOOKS: 'true'
+        run: cargo xtask release-artifact-check
+
       - name: 📦 Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:

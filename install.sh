@@ -11,7 +11,7 @@ repo=shba007/rune-kit
 version=${RUNE_KIT_VERSION:-latest}
 : "${HOME:?Cannot resolve user home}"
 case "$HOME" in /*) ;; *) die "User home must be absolute." ;; esac
-install_dir=${RUNE_KIT_INSTALL_DIR:-"$HOME/rune"}
+install_dir=${RUNE_KIT_INSTALL_DIR:-"$HOME/.rune"}
 base=${RUNE_KIT_BASE_URL:-}
 
 have curl || die 'curl is required.'

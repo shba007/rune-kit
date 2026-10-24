@@ -33,3 +33,8 @@ serve dashboard to see server operations instead.
 PTY tests cover standalone empty/failed discovery and attached server entry/exit
 with terminal restoration. TestBackend covers empty/corrupt/narrow layouts.
 See docs/handoff/http-server-report.md for actual platform/test evidence.
+
+The attached server dashboard displays the actual running executable and resolved
+managed data root. Defaults are `~/.rune/rune-kit[.exe]` and `~/.rune/tools`;
+custom executable locations and `RUNE_KIT_DATA_DIR` are shown as resolved, rather
+than inferred from defaults. It observes only its own HTTP server.
