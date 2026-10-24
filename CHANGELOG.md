@@ -3,6 +3,16 @@ All notable changes to this project will be documented in this file. See [conven
 
 - - -
 
+## [v0.7.0](https://github.com/shba007/rune-kit/compare/v0.6.0..v0.7.0) - 2026-10-24
+
+#### 🚀 Features
+- (**generator**) add Cocogitto integration for changelog generation - ([b577fd9](https://github.com/shba007/rune-kit/commit/b577fd9c82ccc8fc7531fa30cd3bf0a399b768d3)) - Shirsendu Bairagi
+
+#### 🐛 Bug Fixes
+- (**render**) adjust changelog retrieval to use HEAD for release type - ([4c2458a](https://github.com/shba007/rune-kit/commit/4c2458a546c7560a61ccbeaabe981071f0fb842d)) - Shirsendu Bairagi
+
+- - -
+
 ## [v0.6.0](https://github.com/shba007/rune-kit/compare/v0.5.0..v0.6.0) - 2026-10-24
 
 #### 🚀 Features
