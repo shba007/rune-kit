@@ -1,8 +1,28 @@
 # Changelog
 
-## 0.6.0 - 2026-10-24
-- introduce local MCP HTTP server with attached dashboard
+## v0.6.0
 
+[v0.5.0...v0.6.0](https://github.com/shba007/rune-kit/compare/v0.5.0...v0.6.0)
+
+### Enhancements
+
+- Introduce local MCP HTTP server with attached dashboard (**breaking**) ([e89dc7c](https://github.com/shba007/rune-kit/commit/e89dc7c110a876e4a49dab942519bbbe5e3ecfdd))
+
+### Fixes
+
+- Change default installation directory to hidden folder ([69d408f](https://github.com/shba007/rune-kit/commit/69d408fce53bb8494f6a0016e9948506780c9384))
+
+### Tests
+
+- Enhance Windows hidden install test for path deduplication and identity ([9186131](https://github.com/shba007/rune-kit/commit/9186131db473a574c3be4952fddf9c6958a4237c))
+
+### Breaking Changes
+
+- introduce local MCP HTTP server with attached dashboard ([e89dc7c](https://github.com/shba007/rune-kit/commit/e89dc7c110a876e4a49dab942519bbbe5e3ecfdd))
+
+### Contributors
+
+- Shirsendu Bairagi
 ## 0.5.0 - 2026-10-23
 - remove unit tests for release notes extraction, add xtask for release management and changelog handling
 - implement MCP 2026-07-28 discovery and per-request metadata model
