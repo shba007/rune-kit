@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file. See [conven
 
 - - -
 
+## [v0.8.0](https://github.com/shba007/rune-kit/compare/v0.7.0..v0.8.0) - 2026-10-24
+
+#### 🚀 Features
+- (**registry**) add versioned registry configuration and artifact integrity metadata - ([b45ea6a](https://github.com/shba007/rune-kit/commit/b45ea6a7c8a62b19a15a673bcb922989f1b77fe6)) - Shirsendu Bairagi
+
+- - -
+
 ## [v0.7.0](https://github.com/shba007/rune-kit/compare/v0.6.0..v0.7.0) - 2026-10-24
 
 #### 🚀 Features
