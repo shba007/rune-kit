@@ -2,7 +2,11 @@
   "base_tag": "v0.5.0",
   "version": "0.6.0",
   "commits": [
+    "69d408fce53bb8494f6a0016e9948506780c9384",
+    "9186131db473a574c3be4952fddf9c6958a4237c",
     "e89dc7c110a876e4a49dab942519bbbe5e3ecfdd"
   ],
-  "notes_sha256": "b47ffcd484950432955de30556e3e579d18e3854afcba4dae4cfad8fd848ef60"
+  "notes_sha256": "cb1a4e27f820d783298e354656d91c4bfc4f64d58dc06f0e82253a67f7e7d3c4",
+  "source_head": "9186131db473a574c3be4952fddf9c6958a4237c",
+  "generator": "git-cliff-core 2.14.2"
 }
