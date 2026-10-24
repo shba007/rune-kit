@@ -423,7 +423,22 @@ fn windows_default_hidden_install_deduplicates_path_and_preserves_visible_infer(
         b"hidden infer"
     );
     let entries = fs::read_to_string(path_record).unwrap();
-    assert_eq!(entries.split(';').next().unwrap(), hidden.to_str().unwrap());
-    assert_eq!(entries.matches(hidden.to_str().unwrap()).count(), 1);
-    assert!(entries.contains(visible.to_str().unwrap()));
+    // Windows CI may expose TEMP as RUNNER~1 while PowerShell expands it to
+    // runneradmin. Compare directory identity, retaining order/dedup assertions.
+    let hidden = fs::canonicalize(&hidden).unwrap();
+    let visible = fs::canonicalize(&visible).unwrap();
+    let paths: Vec<_> = entries.split(';').map(Path::new).collect();
+    assert_eq!(fs::canonicalize(paths[0]).unwrap(), hidden);
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|path| fs::canonicalize(path).ok().as_ref() == Some(&hidden))
+            .count(),
+        1
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|path| fs::canonicalize(path).ok().as_ref() == Some(&visible))
+    );
 }
