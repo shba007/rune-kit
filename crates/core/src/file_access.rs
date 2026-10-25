@@ -634,8 +634,10 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root =
-                std::env::temp_dir().join(format!("kit-broker-{}-{nonce}", std::process::id()));
+            let root = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("kit-broker-{}-{nonce}", std::process::id()));
             fs::create_dir(&root).unwrap();
             let external = root.join("external");
             fs::create_dir(&external).unwrap();

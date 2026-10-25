@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn dashboard_records_multiple_paths_per_plugin_and_confirms_revocation() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let file = root.path().join("original.txt");
         let folder = root.path().join("external");
         std::fs::write(&file, b"original").unwrap();
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn panel_discloses_inactive_isolation_and_handles_empty_inventory_and_small_terminals() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let mut panel = Panel::open_at(vec![], Ok(root.path().join("sandbox")));
         for size in [(110, 28), (48, 16), (30, 8)] {
             let mut terminal =

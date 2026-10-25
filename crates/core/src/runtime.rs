@@ -1389,8 +1389,10 @@ mod workspace_tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("kit-wasi-{}-{nonce}", std::process::id()));
+            let path = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("kit-wasi-{}-{nonce}", std::process::id()));
             std::fs::create_dir(&path).unwrap();
             std::fs::create_dir(path.join("workspace")).unwrap();
             Self(path)

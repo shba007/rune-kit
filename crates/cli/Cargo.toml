@@ -31,6 +31,7 @@ crossterm = "0.29"
 xtask = { path = "../../xtask" }
 tempfile = "3"
 portable-pty = "0.9"
+vt100 = "=0.18.1"
 flate2.workspace = true
 tar.workspace = true
 zip.workspace = true

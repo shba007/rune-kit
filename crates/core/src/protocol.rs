@@ -45,6 +45,18 @@ pub struct McpRouter {
 }
 
 pub fn namespace_resource_uri(namespace: &str, local_uri: &str) -> String {
+    // Artifact paths are valid router keys, but their separators and drive
+    // prefixes must not become URI delimiters. Ordinary package names are unchanged.
+    let namespace: String = namespace
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
     let clean_local = if let Some(stripped) = local_uri.strip_prefix("rune://") {
         if let Some((_old_ns, subpath)) = stripped.split_once('/') {
             subpath
@@ -529,7 +541,7 @@ impl McpRouter {
 
                     // Expose declared rules resource for each namespace
                     all_resources.push(json!({
-                        "uri": format!("rune://{}/rules", ns),
+                        "uri": namespace_resource_uri(ns, "rules"),
                         "name": format!("{} Rules & Capabilities", ns),
                         "description": format!("Declared capabilities, tool annotations, and execution rules for plugin '{}'", ns),
                         "mimeType": "application/json"
@@ -757,8 +769,18 @@ impl McpRouter {
             "resources/read" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                match parse_resource_uri(uri) {
-                    Some((ns, local_uri)) => match self.instances.get_mut(ns) {
+                // Resolve encoded URI namespaces back to the exact registered key.
+                let route = self
+                    .instances
+                    .keys()
+                    .filter_map(|namespace| {
+                        uri.strip_prefix(namespace_resource_uri(namespace, "").as_str())
+                            .map(|local| (namespace.clone(), local))
+                    })
+                    .max_by_key(|(namespace, _)| namespace.len())
+                    .or_else(|| parse_resource_uri(uri).map(|(ns, local)| (ns.to_owned(), local)));
+                match route {
+                    Some((ns, local_uri)) => match self.instances.get_mut(&ns) {
                         Some(instance) => {
                             let _operation =
                                 WasmOperation::track(instance, self.wasm_operation.clone());
@@ -774,7 +796,7 @@ impl McpRouter {
                                     "id": id,
                                     "result": {
                                         "contents": [{
-                                            "uri": format!("rune://{}/rules", ns),
+                                            "uri": namespace_resource_uri(&ns, "rules"),
                                             "mimeType": "application/json",
                                             "text": rules_json
                                         }]

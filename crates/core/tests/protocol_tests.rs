@@ -19,6 +19,48 @@ fn resource_uri_round_trip_with_nested_path() {
 }
 
 #[test]
+fn rules_resource_routes_absolute_artifact_namespaces_with_slashes() {
+    use rune_kit_core::{PluginInstance, WasmPluginInstance};
+    let mut router = McpRouter::new();
+    for namespace in [
+        "/tmp/local-plugin",
+        "/tmp/local-plugin/nested",
+        r"\\?\D:\plugins\local plugin",
+    ] {
+        let wasm = WasmPluginInstance::load_from_bytes(
+            namespace,
+            wat::parse_str("(module)").unwrap(),
+            Default::default(),
+            PluginManifest::default(),
+        )
+        .unwrap();
+        router.register(namespace.into(), PluginInstance::Wasm(Box::new(wasm)));
+    }
+    for namespace in [
+        "/tmp/local-plugin",
+        "/tmp/local-plugin/nested",
+        r"\\?\D:\plugins\local plugin",
+    ] {
+        let uri = namespace_resource_uri(namespace, "rules");
+        let request = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":uri,"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}});
+        let response = router.handle_jsonrpc(&request.to_string()).unwrap();
+        assert_eq!(response["result"]["contents"][0]["uri"], uri, "{response}");
+    }
+}
+
+#[test]
+fn artifact_namespace_is_encoded_as_one_uri_component() {
+    assert_eq!(
+        namespace_resource_uri("/tmp/local plugin", "rules"),
+        "rune://%2Ftmp%2Flocal%20plugin/rules"
+    );
+    assert_eq!(
+        namespace_resource_uri(r"D:\plugins\local", "rules"),
+        "rune://D%3A%5Cplugins%5Clocal/rules"
+    );
+}
+
+#[test]
 fn parse_resource_uri_rejects_unnamespaced() {
     assert_eq!(parse_resource_uri("config.json"), None);
     assert_eq!(parse_resource_uri("rune://only-namespace"), None);

@@ -243,8 +243,10 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("kit-sandbox-{}-{nonce}", std::process::id()));
+            let path = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("kit-sandbox-{}-{nonce}", std::process::id()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }

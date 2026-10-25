@@ -58,10 +58,16 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
         "/etc/ld.so.cache",
     ] {
         if std::path::Path::new(path).exists() {
+            // HardRequirement rejects directory-only rights on a regular file.
+            let read = if std::path::Path::new(path).is_dir() {
+                AccessFs::from_read(abi)
+            } else {
+                AccessFs::ReadFile.into()
+            };
             rules = rules
                 .add_rule(PathBeneath::new(
                     PathFd::new(path).map_err(|e| error(&e))?,
-                    AccessFs::from_read(abi),
+                    read,
                 ))
                 .map_err(|e| error(&e))?;
         }

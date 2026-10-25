@@ -2,7 +2,7 @@ use std::path::PathBuf;
 fn fixture() -> PathBuf {
     static FIXTURE: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let directory = FIXTURE.get_or_init(|| {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = support::tempdir();
         let target = temp
             .path()
             .join(format!("native-fixture{}", std::env::consts::EXE_SUFFIX));
@@ -27,10 +27,20 @@ fn fixture() -> PathBuf {
 mod support;
 
 #[test]
+fn terminal_capture_renders_absolute_and_relative_spacing_and_retains_restored_screens() {
+    for bytes in [
+        b"\x1b[?1049h\x1b[7;1HNetwork\x1b[7;9H&\x1b[7;11Hsecurity\x1b[?1049l".as_slice(),
+        b"\x1b[?1049hNetwork\x1b[1C&\x1b[1Csecurity\x1b[?1049l".as_slice(),
+    ] {
+        assert!(support::terminal_text(bytes).contains("Network & security"));
+    }
+}
+
+#[test]
 fn first_run_terminal_opens_network_setup_with_logo_and_restores_on_cancel() {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::io::{Read, Write};
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let pty = native_pty_system()
         .openpty(PtySize {
             rows: 28,
@@ -67,16 +77,13 @@ fn first_run_terminal_opens_network_setup_with_logo_and_restores_on_cancel() {
         if let Ok(data) = rx.recv_timeout(Duration::from_millis(100)) {
             evidence.extend(data);
         }
-        let text = String::from_utf8_lossy(&evidence);
-        if !answered && text.contains("\u{1b}[6n") {
+        let text = support::terminal_text(&evidence);
+        if !answered && String::from_utf8_lossy(&evidence).contains("\u{1b}[6n") {
             writer.write_all(b"\x1b[1;1R").unwrap();
             writer.flush().unwrap();
             answered = true;
         }
-        if text
-            .replace("\u{1b}[1C", " ")
-            .contains("Network & security")
-        {
+        if text.contains("Network & security") {
             break;
         }
     }
@@ -100,18 +107,18 @@ fn first_run_terminal_opens_network_setup_with_logo_and_restores_on_cancel() {
     while let Ok(data) = rx.recv_timeout(Duration::from_millis(100)) {
         evidence.extend(data);
     }
-    let text = String::from_utf8_lossy(&evidence).replace("\u{1b}[1C", " ");
+    let text = support::terminal_text(&evidence);
     assert!(text.contains("Network & security"), "{text}");
     assert!(text.contains("Rune MCP Engine & Package Manager"));
     assert!(!text.contains("Welcome"));
-    assert!(text.contains("\u{1b}[?1049l"));
+    assert!(String::from_utf8_lossy(&evidence).contains("\u{1b}[?1049l"));
     assert!(!root.path().join("setup.json").exists());
     assert!(!root.path().join(".env").exists());
 }
 
 #[test]
 fn bare_first_run_requires_a_terminal_instead_of_silently_starting_an_empty_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let output =
         support::output(Command::new(support::binary()).env("RUNE_KIT_DATA_DIR", root.path()));
     assert!(!output.status.success());
@@ -123,7 +130,7 @@ fn bare_first_run_requires_a_terminal_instead_of_silently_starting_an_empty_serv
 fn bare_command_resumes_saved_plugins_and_uses_the_saved_token() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let wasm = root.path().join("minimal.wasm");
     fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
     fs::write(root.path().join("installed.json"),json!({"version":1,"plugins":{"minimal":{"name":"minimal","version":"1.0.0","binary_path":wasm,"execution_kind":"wasm","sha256":"fixture","source":"local","default_params":{}}}}).to_string()).unwrap();
@@ -186,7 +193,7 @@ fn copy_back_cli_requires_the_exact_review_and_restore_approval() {
         file_access::{Broker, Operation, Request},
         sandbox::Sandbox,
     };
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let source = root.path().join("source.txt");
     fs::write(&source, b"original").unwrap();
     let mut sandbox = Sandbox::open(root.path().join("sandbox")).unwrap();
@@ -256,7 +263,7 @@ fn copy_back_cli_requires_the_exact_review_and_restore_approval() {
 
 #[test]
 fn lan_wildcard_serving_requires_authentication_and_rejects_untrusted_hosts_and_origins() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let data_root = root.path().to_str().unwrap();
     let gateway = Gateway::start(
         &support::binary(),
@@ -320,7 +327,7 @@ fn lan_wildcard_serving_requires_authentication_and_rejects_untrusted_hosts_and_
 
 #[test]
 fn workspace_only_mode_serves_wasm_without_mounting_approved_external_paths() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let wasm = root.path().join("minimal.wasm");
     fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
     let original = root.path().join("original.txt");
@@ -340,7 +347,7 @@ fn workspace_only_mode_serves_wasm_without_mounting_approved_external_paths() {
 
 #[test]
 fn workspace_only_mode_rejects_native_plugins_without_starting_a_server() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     installed(root.path(), &fixture());
     for target in [None, Some(fixture())] {
         let mut command = Command::new(support::binary());
@@ -367,7 +374,7 @@ fn dashboard_configuration_applies_to_live_native_instance_and_preserves_failed_
     use rune_kit_cli::configuration::{Configuration, Plugin};
     use rune_kit_core::{ExecutionKind, McpRouter, PluginManifest};
     use std::sync::{Arc, Mutex};
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let path = root.path().join("dashboard.json");
     let manifest: PluginManifest = serde_json::from_value(serde_json::json!({"configuration": {
         "schema_version":1,"fields": {
@@ -486,7 +493,7 @@ fn env(dir: &std::path::Path) -> Vec<(String, String)> {
 }
 #[test]
 fn configured_remote_routes_tools_and_resources_through_real_http_gateways() {
-    let upstream_root = tempfile::tempdir().unwrap();
+    let upstream_root = support::tempdir();
     let upstream_env = env(upstream_root.path());
     let upstream_env: Vec<_> = upstream_env
         .iter()
@@ -499,7 +506,7 @@ fn configured_remote_routes_tools_and_resources_through_real_http_gateways() {
         &upstream_env,
     )
     .unwrap();
-    let downstream_root = tempfile::tempdir().unwrap();
+    let downstream_root = support::tempdir();
     let added = support::output(
         Command::new(support::binary())
             .env("RUNE_KIT_DATA_DIR", downstream_root.path())
@@ -555,7 +562,7 @@ fn configured_remote_routes_tools_and_resources_through_real_http_gateways() {
 }
 #[test]
 fn public_http_preserves_contract_errors_and_stream_cancellation() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let data = env(dir.path());
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let plugin = fixture();
@@ -642,7 +649,7 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
     for with_plugin in [false, true] {
         let attached = true;
         let missing = false;
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         if with_plugin {
             installed(root.path(), &fixture());
         }
@@ -695,12 +702,12 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
                     writer.flush().unwrap();
                 }
             }
-            if String::from_utf8_lossy(&evidence).contains(expected) {
+            if support::terminal_text(&evidence).contains(expected) {
                 break;
             }
         }
         if attached {
-            let text = String::from_utf8_lossy(&evidence);
+            let text = support::terminal_text(&evidence);
             let start = text
                 .find("http://127.0.0.1:")
                 .expect("Attached endpoint missing");
@@ -721,14 +728,14 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
             assert!(result.text().unwrap().contains("dashboard-check"));
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while std::time::Instant::now() < deadline
-                && !String::from_utf8_lossy(&evidence).contains("ping")
+                && !support::terminal_text(&evidence).contains("ping")
             {
                 if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                     evidence.extend(bytes);
                 }
             }
             assert!(
-                String::from_utf8_lossy(&evidence).contains("ping"),
+                support::terminal_text(&evidence).contains("ping"),
                 "Server call was not shown in attached TUI"
             );
         }
@@ -737,33 +744,29 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
         let expected_tools = if with_plugin { "fixture__" } else { "Tools" };
         while std::time::Instant::now() < deadline
-            && !String::from_utf8_lossy(&evidence).contains(expected_tools)
+            && !support::terminal_text(&evidence).contains(expected_tools)
         {
             if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                 evidence.extend(bytes);
             }
         }
         assert!(
-            String::from_utf8_lossy(&evidence).contains(expected_tools),
+            support::terminal_text(&evidence).contains(expected_tools),
             "Discovery was not shown: {}",
-            String::from_utf8_lossy(&evidence)
+            support::terminal_text(&evidence)
         );
         writer.write_all(b"m").unwrap();
         writer.flush().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline
-            && !String::from_utf8_lossy(&evidence)
-                .replace("\u{1b}[1C", " ")
-                .contains("Third-party MCP servers")
+            && !support::terminal_text(&evidence).contains("Third-party MCP servers")
         {
             if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                 evidence.extend(bytes);
             }
         }
         assert!(
-            String::from_utf8_lossy(&evidence)
-                .replace("\u{1b}[1C", " ")
-                .contains("Third-party MCP servers"),
+            support::terminal_text(&evidence).contains("Third-party MCP servers"),
             "Remote panel did not open on m"
         );
         writer.write_all(b"q").unwrap();
@@ -772,14 +775,14 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         writer.flush().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline
-            && !String::from_utf8_lossy(&evidence).contains("NOT ACTIVE")
+            && !support::terminal_text(&evidence).contains("NOT ACTIVE")
         {
             if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                 evidence.extend(bytes);
             }
         }
         assert!(
-            String::from_utf8_lossy(&evidence).contains("NOT ACTIVE"),
+            support::terminal_text(&evidence).contains("NOT ACTIVE"),
             "Sandbox disclosure missing"
         );
         assert!(root.path().join("sandbox").is_dir());
@@ -788,7 +791,7 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         writer.flush().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline
-            && !String::from_utf8_lossy(&evidence).contains("Executable:")
+            && !support::terminal_text(&evidence).contains("Executable:")
         {
             if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                 evidence.extend(bytes);
@@ -806,7 +809,7 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
                 fs::write(support::root().join("target/tui-debug.txt"), &evidence).unwrap();
                 panic!(
                     "TUI did not exit on q: {}",
-                    String::from_utf8_lossy(&evidence)
+                    support::terminal_text(&evidence)
                 );
             }
             if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(50)) {
@@ -818,7 +821,7 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         while let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
             evidence.extend(bytes);
         }
-        let screen = String::from_utf8_lossy(&evidence).replace("\u{1b}[1C", " ");
+        let screen = support::terminal_text(&evidence);
         assert!(status.success(), "TUI process failed: {screen}");
         if attached {
             assert!(
@@ -835,11 +838,11 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
             "Missing state {expected}: {screen}"
         );
         assert!(
-            screen.contains("\u{1b}[?1049h"),
+            String::from_utf8_lossy(&evidence).contains("\u{1b}[?1049h"),
             "Alternate screen not entered: {screen}"
         );
         assert!(
-            screen.contains("\u{1b}[?1049l"),
+            String::from_utf8_lossy(&evidence).contains("\u{1b}[?1049l"),
             "Alternate screen not restored: {screen}"
         );
         let destination = support::root().join("target").join(if attached {
@@ -883,7 +886,7 @@ fn http(
 }
 #[test]
 fn http_security_negotiation_and_protocol_validation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let plugin = fixture();
     let data = env(root.path());
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -975,7 +978,7 @@ fn http_security_negotiation_and_protocol_validation() {
 }
 #[test]
 fn server_permissions_are_ceilings_and_reused_ids_are_isolated() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let plugin = fixture();
     let data = env(root.path());
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1046,7 +1049,7 @@ fn server_permissions_are_ceilings_and_reused_ids_are_isolated() {
 }
 #[test]
 fn occupied_port_non_loopback_and_legacy_transport_are_actionable() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port().to_string();
     for (args, message) in [
@@ -1078,7 +1081,7 @@ fn occupied_port_non_loopback_and_legacy_transport_are_actionable() {
 
 #[test]
 fn mirrored_headers_and_optional_local_auth_are_enforced_before_tool_execution() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let plugin = fixture();
     let data_root = root.path().to_str().unwrap();
     let tools = r#"{"tools":[{"name":"read","description":"Header fixture","inputSchema":{"type":"object","properties":{"tenant":{"type":"string","x-mcp-header":"Tenant"}},"required":["tenant"]},"annotations":{"readOnlyHint":true}}]}"#;
@@ -1138,7 +1141,7 @@ fn mirrored_headers_and_optional_local_auth_are_enforced_before_tool_execution()
 
 #[test]
 fn studio_http_fixtures_match_real_gateway_responses() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let plugin = fixture();
     let data = env(root.path());
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1175,7 +1178,7 @@ fn studio_http_fixtures_match_real_gateway_responses() {
 }
 #[test]
 fn client_selection_cannot_expand_server_allowlist() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let plugin = fixture();
     let data = env(root.path());
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1203,7 +1206,7 @@ fn client_selection_cannot_expand_server_allowlist() {
 fn noninteractive_serve_remains_available_after_stdin_is_closed() {
     use std::io::{BufRead, BufReader, Read};
     use std::process::Stdio;
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let mut command = Command::new(support::binary());
     command
         .args(["serve", "--port", "0"])

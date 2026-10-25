@@ -236,7 +236,7 @@ mod tests {
     };
     #[test]
     fn tui_requires_visible_review_and_confirmation_and_can_restore_the_selected_backup() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = root.path().join("original.txt");
         std::fs::write(&source, b"original").unwrap();
         let storage = root.path().join("sandbox");

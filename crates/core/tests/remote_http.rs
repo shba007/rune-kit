@@ -38,8 +38,14 @@ fn fixture(
                     other => panic!("Missing expected remote request {index}: {other:?}"),
                 }
             };
+            // Accepted sockets inherit nonblocking mode on Windows. Only the
+            // accept loop polls; fixture requests use bounded blocking I/O.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let mut data = Vec::new();
             let end = loop {
