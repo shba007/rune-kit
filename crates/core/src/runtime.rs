@@ -8,12 +8,14 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
+    #[error("Remote MCP server returned JSON-RPC error {code}")]
+    RemoteRpc { code: i64 },
     #[error("Plugin file not found: {0}")]
     FileNotFound(String),
     #[error("Failed to initialize Extism plugin: {0}")]
@@ -62,6 +64,21 @@ pub struct SidecarExecRequest {
     pub method: String,
     pub params: Value,
 }
+
+// Additive cooperative API for Rune Tools. It is intentionally unavailable to
+// unrestricted native processes; user approval is never a guest operation.
+#[derive(Clone)]
+struct BrokerIdentity {
+    name: String,
+    root: PathBuf,
+}
+host_fn!(host_file_access(user_data: BrokerIdentity; input: String) -> Result<String, extism::Error> {
+    let identity=user_data.get()?.lock().map_err(|_|extism::Error::msg("Cannot access plugin identity"))?.clone();
+    let request=serde_json::from_str::<crate::file_access::Request>(&input).map_err(|_|extism::Error::msg("Invalid file-access v1 request"))?;
+    let broker=crate::file_access::Broker::open(identity.root,&identity.name)?;
+    let response=broker.request(request)?;
+    Ok(serde_json::to_string(&response)?)
+});
 
 host_fn!(host_cmd_exec(user_data: HostContext; input: String) -> Result<String, extism::Error> {
     let data = user_data.get()?;
@@ -303,7 +320,7 @@ impl WasmPluginInstance {
         params: HashMap<String, String>,
         manifest: PluginManifest,
     ) -> Result<Self, RuntimeError> {
-        Self::load_with_workspace(name, bytes, params, manifest, None)
+        Self::load_with_workspace(name, bytes, params, manifest, None, None)
     }
 
     /// Only the given workspace is mounted, at /workspace. No native host bridges
@@ -322,7 +339,28 @@ impl WasmPluginInstance {
         }
         crate::sandbox::check_links(workspace)?;
         let workspace = std::fs::canonicalize(workspace)?;
-        Self::load_with_workspace(name, bytes, params, manifest, Some(workspace))
+        Self::load_with_workspace(name, bytes, params, manifest, Some(workspace), None)
+    }
+
+    pub fn load_with_file_access(
+        name: &str,
+        bytes: Vec<u8>,
+        params: HashMap<String, String>,
+        manifest: PluginManifest,
+        sandbox: &crate::sandbox::Sandbox,
+    ) -> Result<Self, RuntimeError> {
+        let workspace = sandbox.workspace(name)?;
+        Self::load_with_workspace(
+            name,
+            bytes,
+            params,
+            manifest,
+            Some(workspace),
+            Some(BrokerIdentity {
+                name: name.into(),
+                root: sandbox.root().to_owned(),
+            }),
+        )
     }
 
     fn load_with_workspace(
@@ -331,6 +369,7 @@ impl WasmPluginInstance {
         mut params: HashMap<String, String>,
         manifest: PluginManifest,
         workspace: Option<PathBuf>,
+        broker: Option<BrokerIdentity>,
     ) -> Result<Self, RuntimeError> {
         let provisioner = BinaryProvisioner::new();
         // Inject provisioned binaries and update PATH for guest execution
@@ -423,7 +462,17 @@ impl WasmPluginInstance {
 
         let builder = PluginBuilder::new(extism_manifest).with_wasi(true);
         let builder = if workspace.is_some() {
-            builder
+            if let Some(identity) = broker {
+                builder.with_function(
+                    "host_file_access",
+                    [PTR],
+                    [PTR],
+                    UserData::new(identity),
+                    host_file_access,
+                )
+            } else {
+                builder
+            }
         } else {
             builder
                 .with_function(
@@ -634,14 +683,33 @@ pub fn resolve_host_env_params() -> HashMap<String, String> {
     params
 }
 
+enum NativeProcess {
+    Plain(Child),
+    Isolated(crate::native_isolation::Process),
+}
+impl NativeProcess {
+    fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(c) => c.kill(),
+            Self::Isolated(c) => c.kill(),
+        }
+    }
+    fn wait(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(c) => c.wait().map(|_| ()),
+            Self::Isolated(c) => c.wait(),
+        }
+    }
+}
 pub struct NativeSidecar {
     pub name: String,
     binary_path: PathBuf,
     params: HashMap<String, String>,
     #[allow(dead_code)]
     manifest: PluginManifest,
-    child: Option<Child>,
-    stdin: Option<ChildStdin>,
+    child: Option<NativeProcess>,
+    isolation: Option<crate::native_isolation::Policy>,
+    stdin: Option<Box<dyn Write + Send>>,
     rx: Option<std::sync::mpsc::Receiver<Result<String, std::io::Error>>>,
     next_id: u64,
     operation_cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -654,6 +722,37 @@ impl NativeSidecar {
         path: P,
         params: HashMap<String, String>,
         manifest: Option<PluginManifest>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_internal(name, path, params, manifest, None)
+    }
+    pub fn new_in_workspace(
+        name: &str,
+        path: &Path,
+        mut params: HashMap<String, String>,
+        manifest: PluginManifest,
+        workspace: &Path,
+    ) -> Result<Self, RuntimeError> {
+        if !crate::native_isolation::VALIDATED_ON_ALL_PLATFORMS {
+            return Err(RuntimeError::Execution("Native plugins are blocked in workspace-only mode pending Windows, macOS and Linux validation".into()));
+        }
+        let policy = crate::native_isolation::Policy::new(path, workspace)
+            .map_err(|_| RuntimeError::Execution("Invalid native isolation paths".into()))?;
+        params.insert(
+            "allowed_dir".into(),
+            policy.workspace.to_string_lossy().into(),
+        );
+        params.insert(
+            "ALLOWED_DIR".into(),
+            policy.workspace.to_string_lossy().into(),
+        );
+        Self::new_internal(name, path, params, Some(manifest), Some(policy))
+    }
+    fn new_internal<P: AsRef<Path>>(
+        name: &str,
+        path: P,
+        params: HashMap<String, String>,
+        manifest: Option<PluginManifest>,
+        isolation: Option<crate::native_isolation::Policy>,
     ) -> Result<Self, RuntimeError> {
         let binary_path = path.as_ref().to_path_buf();
         if !binary_path.exists() {
@@ -685,6 +784,7 @@ impl NativeSidecar {
 
         let mut sidecar = Self {
             name: name.to_string(),
+            isolation,
             binary_path,
             params: merged_params,
             manifest: resolved_manifest,
@@ -707,21 +807,47 @@ impl NativeSidecar {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::inherit());
 
-        let mut child = cmd.spawn().map_err(|e| {
-            RuntimeError::Execution(format!(
-                "Failed to spawn native process '{}': {}",
-                self.binary_path.display(),
-                e
-            ))
-        })?;
-
-        let stdin = child.stdin.take().ok_or_else(|| {
-            RuntimeError::Execution("Failed to open child process stdin".to_string())
-        })?;
-
-        let stdout = child.stdout.take().ok_or_else(|| {
-            RuntimeError::Execution("Failed to open child process stdout".to_string())
-        })?;
+        let (child, stdin, stdout): (
+            NativeProcess,
+            Box<dyn Write + Send>,
+            Box<dyn std::io::Read + Send>,
+        ) = if let Some(policy) = &self.isolation {
+            let mut child = crate::native_isolation::spawn(policy, &self.params).map_err(|_| {
+                RuntimeError::Execution(
+                    "Native isolation launch failed; no unconfined fallback".into(),
+                )
+            })?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| RuntimeError::Execution("Missing native input pipe".into()))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| RuntimeError::Execution("Missing native output pipe".into()))?;
+            (NativeProcess::Isolated(child), stdin, stdout)
+        } else {
+            let mut child = cmd.spawn().map_err(|e| {
+                RuntimeError::Execution(format!(
+                    "Failed to spawn native process '{}': {}",
+                    self.binary_path.display(),
+                    e
+                ))
+            })?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| RuntimeError::Execution("Missing native input pipe".into()))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| RuntimeError::Execution("Missing native output pipe".into()))?;
+            (
+                NativeProcess::Plain(child),
+                Box::new(stdin),
+                Box::new(stdout),
+            )
+        };
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1072,9 +1198,22 @@ impl Drop for NativeSidecar {
 pub enum PluginInstance {
     Wasm(Box<WasmPluginInstance>),
     Native(Box<NativeSidecar>),
+    Remote(Box<crate::remote::RemoteHttp>),
 }
 
 impl PluginInstance {
+    pub fn set_operation_context(
+        &mut self,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+        timeout: Option<std::time::Duration>,
+    ) {
+        match self {
+            Self::Native(n) => n.set_operation_context(cancel, timeout),
+            Self::Remote(r) => r.set_operation_context(cancel, timeout),
+            Self::Wasm(_) => {}
+        }
+    }
+
     pub fn load_wasm_from_file<P: AsRef<Path>>(
         name: &str,
         path: P,
@@ -1103,6 +1242,12 @@ impl PluginInstance {
     ) -> Result<Vec<ToolDefinition>, RuntimeError> {
         match self {
             Self::Native(native) => native.list_tools_with_cancel(cancel, Some(timeout)),
+            Self::Remote(remote) => {
+                remote.set_operation_context(cancel.clone(), Some(timeout));
+                let result = remote.list_tools();
+                remote.set_operation_context(cancel, None);
+                result
+            }
             Self::Wasm(wasm) => {
                 let handle = wasm.get_cancel_handle();
                 let stop = cancel.clone();
@@ -1141,6 +1286,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.get_info(),
             PluginInstance::Native(n) => n.get_info(),
+            PluginInstance::Remote(r) => r.get_info(),
         }
     }
 
@@ -1148,6 +1294,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.list_tools(),
             PluginInstance::Native(n) => n.list_tools(),
+            PluginInstance::Remote(r) => r.list_tools(),
         }
     }
 
@@ -1155,6 +1302,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.cancel(),
             PluginInstance::Native(n) => n.cancel(),
+            PluginInstance::Remote(r) => r.cancel(),
         }
     }
 
@@ -1162,6 +1310,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => &w.manifest,
             PluginInstance::Native(n) => &n.manifest,
+            PluginInstance::Remote(r) => &r.manifest,
         }
     }
 
@@ -1169,6 +1318,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.call_tool(name, arguments),
             PluginInstance::Native(n) => n.call_tool(name, arguments),
+            PluginInstance::Remote(r) => r.call_tool(name, arguments),
         }
     }
 
@@ -1186,6 +1336,12 @@ impl PluginInstance {
             PluginInstance::Native(n) => {
                 n.call_tool_with_cancel(name, arguments, cancel_flag, timeout)
             }
+            PluginInstance::Remote(r) => {
+                if let Some(timeout) = timeout {
+                    r.set_operation_context(cancel_flag, Some(timeout));
+                }
+                r.call_tool(name, arguments)
+            }
         }
     }
 
@@ -1193,6 +1349,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.list_resources(),
             PluginInstance::Native(n) => n.list_resources(),
+            PluginInstance::Remote(r) => r.list_resources(),
         }
     }
 
@@ -1200,6 +1357,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.read_resource(uri),
             PluginInstance::Native(n) => n.read_resource(uri),
+            PluginInstance::Remote(r) => r.read_resource(uri),
         }
     }
 
@@ -1207,6 +1365,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.list_prompts(),
             PluginInstance::Native(n) => n.list_prompts(),
+            PluginInstance::Remote(r) => r.list_prompts(),
         }
     }
 
@@ -1214,6 +1373,7 @@ impl PluginInstance {
         match self {
             PluginInstance::Wasm(w) => w.get_prompt(name, arguments),
             PluginInstance::Native(n) => n.get_prompt(name, arguments),
+            PluginInstance::Remote(r) => r.get_prompt(name, arguments),
         }
     }
 }
@@ -1240,6 +1400,81 @@ mod workspace_tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    fn file_access_guest(request: serde_json::Value) -> Vec<u8> {
+        let payload = request.to_string();
+        let stores: String = payload
+            .bytes()
+            .enumerate()
+            .map(|(i, b)| {
+                format!(
+                    "(call $store (i64.add (local.get $ptr) (i64.const {i})) (i32.const {b}))\n"
+                )
+            })
+            .collect();
+        wat::parse_str(format!(
+            r#"(module
+            (import "extism:host/env" "alloc" (func $alloc (param i64) (result i64)))
+            (import "extism:host/env" "store_u8" (func $store (param i64 i32)))
+            (import "extism:host/env" "length" (func $length (param i64) (result i64)))
+            (import "extism:host/env" "output_set" (func $output (param i64 i64)))
+            (import "extism:host/user" "host_file_access" (func $access (param i64) (result i64)))
+            (func (export "mcp_call_tool") (result i32) (local $ptr i64) (local $result i64)
+                (local.set $ptr (call $alloc (i64.const {})))
+                {stores}
+                (local.set $result (call $access (local.get $ptr)))
+                (call $output (local.get $result) (call $length (local.get $result)))
+                (i32.const 0)))"#,
+            payload.len()
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn cooperative_file_access_is_bound_to_host_identity_and_never_copies_back_from_a_guest() {
+        let f = Fixture::new();
+        let file = f.0.join("original.txt");
+        std::fs::write(&file, b"original").unwrap();
+        let mut sandbox = crate::sandbox::Sandbox::open(f.0.join("sandbox")).unwrap();
+        sandbox.approve("owner", &file).unwrap();
+        let write = serde_json::json!({"schema_version":1,"operation":"write_file","path":file,"data":b"staged".to_vec()});
+        let mut owner = WasmPluginInstance::load_with_file_access(
+            "owner",
+            file_access_guest(write.clone()),
+            Default::default(),
+            PluginManifest::default(),
+            &sandbox,
+        )
+        .unwrap();
+        assert_eq!(
+            owner.call_tool("write", serde_json::json!({})).unwrap()["staged"],
+            true
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"original");
+        let broker = crate::file_access::Broker::open(sandbox.root().to_owned(), "owner").unwrap();
+        assert_eq!(broker.reviews().unwrap().len(), 1);
+        let mut other = WasmPluginInstance::load_with_file_access(
+            "other",
+            file_access_guest(write),
+            Default::default(),
+            PluginManifest::default(),
+            &sandbox,
+        )
+        .unwrap();
+        assert!(other.call_tool("write", serde_json::json!({})).is_err());
+        let invalid =
+            serde_json::json!({"schema_version":1,"operation":"apply_review","path":file});
+        let mut guest = WasmPluginInstance::load_with_file_access(
+            "owner",
+            file_access_guest(invalid),
+            Default::default(),
+            PluginManifest::default(),
+            &sandbox,
+        )
+        .unwrap();
+        assert!(guest.call_tool("apply", serde_json::json!({})).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"original");
     }
 
     #[test]

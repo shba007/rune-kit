@@ -12,6 +12,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub(crate) fn safe(value: &str) -> String {
     value.chars().filter(|c| !c.is_control()).collect()
 }
+pub(crate) fn safe_multiline(value: &str) -> String {
+    value.lines().map(safe).collect::<Vec<_>>().join("\n")
+}
 fn panel(title: &'static str, focus: bool) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
@@ -46,6 +49,8 @@ pub fn server_dashboard(
     let mut discovery: Option<std::thread::JoinHandle<()>> = None;
     let mut editor: Option<crate::config_editor::Editor> = None;
     let mut sandbox: Option<crate::sandbox_panel::Panel> = None;
+    let mut remotes: Option<crate::remote_panel::Panel> = None;
+    let mut changes: Option<crate::changes_panel::Panel> = None;
     loop {
         if let Some(editor) = &mut editor {
             editor.poll();
@@ -63,6 +68,12 @@ pub fn server_dashboard(
             if let Some(panel) = &sandbox {
                 panel.draw(frame);
             }
+            if let Some(panel) = &mut remotes {
+                panel.draw(frame);
+            }
+            if let Some(panel) = &changes {
+                panel.draw(frame);
+            }
         })?;
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
@@ -70,6 +81,12 @@ pub fn server_dashboard(
         {
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 break;
+            }
+            if let Some(panel) = &mut remotes {
+                if panel.key(key.code, &router, &state) {
+                    remotes = None;
+                }
+                continue;
             }
             if let Some(active) = &mut editor {
                 if active.key(key.code, config.clone(), router.clone(), state.clone()) {
@@ -80,6 +97,12 @@ pub fn server_dashboard(
             if let Some(panel) = &mut sandbox {
                 if panel.key(key.code) {
                     sandbox = None;
+                }
+                continue;
+            }
+            if let Some(panel) = &mut changes {
+                if panel.key(key.code) {
+                    changes = None;
                 }
                 continue;
             }
@@ -103,8 +126,19 @@ pub fn server_dashboard(
                     let state = state.clone();
                     discovery = Some(std::thread::spawn(move || discover(state)));
                 }
+                KeyCode::Char('m') => {
+                    remotes = Some(crate::remote_panel::Panel::open(snapshot.data_root.clone()))
+                }
                 KeyCode::Char('i') => configuration = !configuration,
                 KeyCode::Char('e') => editor = Some(Default::default()),
+                KeyCode::Char('c') => {
+                    if let Ok(config) = config.try_lock() {
+                        changes = Some(crate::changes_panel::Panel::new(
+                            rune_kit_core::paths::sandbox_root()?,
+                            config.plugins.iter().map(|p| p.name.clone()).collect(),
+                        ));
+                    }
+                }
                 KeyCode::Char('s') => {
                     if let Ok(config) = config.try_lock() {
                         sandbox = Some(crate::sandbox_panel::Panel::open(
@@ -229,6 +263,7 @@ fn draw_server(
     if configuration {
         let lines = vec![
             label("Status", &snapshot.status),
+            label("Bind", &snapshot.bind_address),
             label(
                 "Isolation",
                 if snapshot.workspace_only {
@@ -311,24 +346,28 @@ fn draw_server(
         }
         draw_activity(frame, snapshot, selected, tools_view, activity);
     }
-    let hints = if area.width < 110 {
+    let hints = if area.width < 130 {
         [
             ("Tab", "view"),
+            ("m", "remotes"),
             ("d", "discover"),
             ("i", "config"),
             ("e", "edit"),
             ("s", "sandbox"),
+            ("c", "changes"),
             ("q", "stop"),
         ]
         .as_slice()
     } else {
         [
             ("Tab", "calls / tools"),
+            ("m", "remotes"),
             ("↑↓", "select"),
             ("d", "discover"),
             ("i", "config"),
             ("e", "edit"),
             ("s", "sandbox"),
+            ("c", "changes"),
             ("r", "refresh"),
             ("q", "stop"),
         ]
@@ -481,7 +520,7 @@ fn discover(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) {
             .header("Accept", "application/json, text/event-stream")
             .header("MCP-Protocol-Version", "2026-07-28")
             .header("Mcp-Method", "tools/list");
-        if let Ok(token) = std::env::var("RUNE_KIT_HTTP_TOKEN") {
+        if let Some(token) = crate::server::http_token()? {
             request = request.bearer_auth(token);
         }
         let response = request
@@ -523,6 +562,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            bind_address: "127.0.0.1:47601".into(),
             workspace_only: false,
             endpoint: "http://127.0.0.1:47601/mcp".into(),
             status: "listening".into(),

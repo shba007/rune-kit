@@ -9,6 +9,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rune_kit_core::McpRouter;
+use rune_kit_core::headers::annotations;
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
@@ -47,6 +48,7 @@ pub struct Call {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub bind_address: String,
     pub workspace_only: bool,
     pub endpoint: String,
     pub status: String,
@@ -152,8 +154,33 @@ fn accepts(headers: &HeaderMap) -> bool {
 }
 fn valid_host(headers: &HeaderMap, address: SocketAddr) -> bool {
     let host = single(headers, "host");
-    host == Some(address.to_string().as_str())
-        || host == Some(format!("localhost:{}", address.port()).as_str())
+    if host == Some(format!("localhost:{}", address.port()).as_str()) {
+        return address.ip().is_loopback() || address.ip().is_unspecified();
+    }
+    let Some(host) = host.and_then(|value| value.parse::<SocketAddr>().ok()) else {
+        return false;
+    };
+    if host.port() != address.port() || host.ip().is_unspecified() || host.ip().is_multicast() {
+        return false;
+    }
+    host == address
+        || (address.ip().is_unspecified()
+            && host.is_ipv4() == address.is_ipv4()
+            && std::net::UdpSocket::bind((host.ip(), 0)).is_ok())
+}
+
+pub fn validate_bind(bind: IpAddr) -> Result<(), Box<dyn std::error::Error>> {
+    if !bind.is_loopback() && http_token()?.is_none_or(|token| token.trim().is_empty()) {
+        return Err("LAN serving requires RUNE_KIT_HTTP_TOKEN; configure a bearer token before binding outside loopback".into());
+    }
+    Ok(())
+}
+pub(crate) fn http_token() -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match std::env::var("RUNE_KIT_HTTP_TOKEN") {
+        Ok(token) => Ok(Some(token).filter(|s| !s.is_empty())),
+        Err(std::env::VarError::NotPresent) => crate::setup::saved_token(),
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn security(
@@ -167,7 +194,7 @@ async fn security(
             StatusCode::FORBIDDEN,
             None,
             -32600,
-            "Only local non-browser clients with the configured Host are supported",
+            "Only non-browser clients with a configured local interface Host are supported",
         );
     }
     if let Some(token) = &state.token
@@ -177,7 +204,7 @@ async fn security(
             StatusCode::UNAUTHORIZED,
             None,
             -32600,
-            "A valid local bearer token is required",
+            "A valid bearer token is required",
         );
     }
     next.run(request).await
@@ -531,59 +558,6 @@ fn selected_tools(request: &Value) -> Option<&Vec<Value>> {
     request["params"]["_meta"]["io.rune-kit/allowedTools"].as_array()
 }
 
-// Validate definitions as well as values; annotations below arrays, refs or
-// composition keywords are not statically reachable and cannot be trusted.
-fn annotations(schema: &Value) -> Result<Vec<(Vec<String>, String)>, String> {
-    fn walk(
-        node: &Value,
-        path: Vec<String>,
-        reachable: bool,
-        property: bool,
-        out: &mut Vec<(Vec<String>, String)>,
-    ) -> Result<(), String> {
-        if let Some(name) = node.get("x-mcp-header") {
-            let name = name.as_str().ok_or("Invalid x-mcp-header")?;
-            if !reachable
-                || !property
-                || !matches!(
-                    node["type"].as_str(),
-                    Some("string" | "integer" | "boolean")
-                )
-                || name.is_empty()
-                || !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
-                || out.iter().any(|(_, seen)| seen.eq_ignore_ascii_case(name))
-            {
-                return Err("Invalid or duplicate x-mcp-header".into());
-            }
-            out.push((path.clone(), name.to_owned()));
-        }
-        if let Some(object) = node.as_object() {
-            for (key, value) in object {
-                if key == "properties" {
-                    if let Some(properties) = value.as_object() {
-                        for (name, child) in properties {
-                            let mut path = path.clone();
-                            path.push(name.clone());
-                            walk(child, path, reachable, true, out)?;
-                        }
-                    }
-                } else {
-                    walk(value, path.clone(), false, false, out)?;
-                }
-            }
-        } else if let Some(array) = node.as_array() {
-            for child in array {
-                walk(child, path.clone(), false, false, out)?;
-            }
-        }
-        Ok(())
-    }
-    let mut out = Vec::new();
-    walk(schema, Vec::new(), true, false, &mut out)?;
-    Ok(out)
-}
 fn mirrors(schema: &Value, args: &Value, headers: &HeaderMap) -> Result<(), String> {
     for (path, name) in annotations(schema)? {
         let mut value = args;
@@ -685,13 +659,24 @@ pub async fn serve(
     options: Options,
     configuration: crate::configuration::Configuration,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if !options.bind.is_loopback() {
-        return Err("Only loopback binding is supported".into());
-    }
+    validate_bind(options.bind)?;
     let listener=tokio::net::TcpListener::bind((options.bind,options.port)).await.map_err(|e|format!("Cannot bind Kit HTTP server to {}:{}: {e}. Choose another --port or stop the existing server.",options.bind,options.port))?;
     let address = listener.local_addr()?;
-    let endpoint = format!("http://{address}/mcp");
+    let connect_address = if address.ip().is_unspecified() {
+        SocketAddr::new(
+            if address.is_ipv4() {
+                "127.0.0.1".parse()?
+            } else {
+                "::1".parse()?
+            },
+            address.port(),
+        )
+    } else {
+        address
+    };
+    let endpoint = format!("http://{connect_address}/mcp");
     let snapshot = Arc::new(Mutex::new(Snapshot {
+        bind_address: address.to_string(),
         workspace_only: options.workspace_only,
         endpoint: endpoint.clone(),
         status: "listening".into(),
@@ -715,12 +700,10 @@ pub async fn serve(
         sequence: AtomicU64::new(1),
         permits: Arc::new(Semaphore::new(32)),
         flags: Mutex::new(HashMap::new()),
-        token: std::env::var("RUNE_KIT_HTTP_TOKEN")
-            .ok()
-            .filter(|v| !v.is_empty()),
+        token: http_token()?,
     });
     eprintln!(
-        "Kit HTTP listening at {endpoint}; filesystem isolation: {}; Ctrl+C to stop",
+        "Kit HTTP listening at {endpoint}; bound {address}; filesystem isolation: {}; Ctrl+C to stop",
         if options.workspace_only {
             "workspace-only WASM; external originals and native helpers blocked"
         } else {

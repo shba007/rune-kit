@@ -27,6 +27,298 @@ fn fixture() -> PathBuf {
 mod support;
 
 #[test]
+fn first_run_terminal_opens_network_setup_with_logo_and_restores_on_cancel() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::{Read, Write};
+    let root = tempfile::tempdir().unwrap();
+    let pty = native_pty_system()
+        .openpty(PtySize {
+            rows: 28,
+            cols: 110,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(support::binary());
+    command.env("RUNE_KIT_DATA_DIR", root.path());
+    command.env("TERM", "xterm-256color");
+    let mut child = pty.slave.spawn_command(command).unwrap();
+    drop(pty.slave);
+    let mut reader = pty.master.try_clone_reader().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut data = [0; 4096];
+        loop {
+            match reader.read(&mut data) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    if tx.send(data[..size].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let mut writer = pty.master.take_writer().unwrap();
+    let mut evidence = Vec::new();
+    let mut answered = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Ok(data) = rx.recv_timeout(Duration::from_millis(100)) {
+            evidence.extend(data);
+        }
+        let text = String::from_utf8_lossy(&evidence);
+        if !answered && text.contains("\u{1b}[6n") {
+            writer.write_all(b"\x1b[1;1R").unwrap();
+            writer.flush().unwrap();
+            answered = true;
+        }
+        if text
+            .replace("\u{1b}[1C", " ")
+            .contains("Network & security")
+        {
+            break;
+        }
+    }
+    writer.write_all(b"\x03").unwrap();
+    writer.flush().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("Setup did not cancel");
+        }
+        if let Ok(data) = rx.recv_timeout(Duration::from_millis(100)) {
+            evidence.extend(data);
+        }
+    }
+    drop(writer);
+    drop(pty.master);
+    while let Ok(data) = rx.recv_timeout(Duration::from_millis(100)) {
+        evidence.extend(data);
+    }
+    let text = String::from_utf8_lossy(&evidence).replace("\u{1b}[1C", " ");
+    assert!(text.contains("Network & security"), "{text}");
+    assert!(text.contains("Rune MCP Engine & Package Manager"));
+    assert!(!text.contains("Welcome"));
+    assert!(text.contains("\u{1b}[?1049l"));
+    assert!(!root.path().join("setup.json").exists());
+    assert!(!root.path().join(".env").exists());
+}
+
+#[test]
+fn bare_first_run_requires_a_terminal_instead_of_silently_starting_an_empty_server() {
+    let root = tempfile::tempdir().unwrap();
+    let output =
+        support::output(Command::new(support::binary()).env("RUNE_KIT_DATA_DIR", root.path()));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    assert!(!root.path().join("setup.json").exists());
+}
+
+#[test]
+fn bare_command_resumes_saved_plugins_and_uses_the_saved_token() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let root = tempfile::tempdir().unwrap();
+    let wasm = root.path().join("minimal.wasm");
+    fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
+    fs::write(root.path().join("installed.json"),json!({"version":1,"plugins":{"minimal":{"name":"minimal","version":"1.0.0","binary_path":wasm,"execution_kind":"wasm","sha256":"fixture","source":"local","default_params":{}}}}).to_string()).unwrap();
+    fs::write(root.path().join("setup.json"),json!({"schema_version":1,"bind":"127.0.0.1","port":0,"plugins":["minimal"],"workspace_only":true}).to_string()).unwrap();
+    fs::write(
+        root.path().join(".env"),
+        "RUNE_KIT_HTTP_TOKEN=\"saved-test-token\"\n",
+    )
+    .unwrap();
+    let mut command = Command::new(support::binary());
+    command
+        .env("RUNE_KIT_DATA_DIR", root.path())
+        .env_remove("RUNE_KIT_HTTP_TOKEN")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Child(command.spawn().unwrap());
+    let mut line = String::new();
+    BufReader::new(child.0.stderr.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let endpoint = line
+        .strip_prefix("Kit HTTP listening at ")
+        .expect("saved server did not start")
+        .split(';')
+        .next()
+        .unwrap();
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let ping = rpc("ping", json!(1), json!({}));
+    assert_eq!(http(&client, endpoint, &ping).send().unwrap().status(), 401);
+    assert_eq!(
+        http(&client, endpoint, &ping)
+            .bearer_auth("saved-test-token")
+            .send()
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[test]
+fn copy_back_cli_requires_the_exact_review_and_restore_approval() {
+    use rune_kit_core::{
+        file_access::{Broker, Operation, Request},
+        sandbox::Sandbox,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source.txt");
+    fs::write(&source, b"original").unwrap();
+    let mut sandbox = Sandbox::open(root.path().join("sandbox")).unwrap();
+    sandbox.approve("fixture", &source).unwrap();
+    let broker = Broker::open(root.path().join("sandbox"), "fixture").unwrap();
+    broker
+        .request(Request {
+            schema_version: 1,
+            operation: Operation::WriteFile,
+            path: source.clone(),
+            data: b"updated".to_vec(),
+        })
+        .unwrap();
+    let run = |args: &[&str]| {
+        support::output(
+            Command::new(support::binary())
+                .args(args)
+                .env("RUNE_KIT_DATA_DIR", root.path()),
+        )
+    };
+    let listed = run(&["changes", "fixture", "list"]);
+    assert!(listed.status.success());
+    let changes: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let token = changes[0]["approval"].as_str().unwrap();
+    assert!(
+        !run(&[
+            "changes",
+            "fixture",
+            "apply",
+            source.to_str().unwrap(),
+            "--approval",
+            "wrong"
+        ])
+        .status
+        .success()
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"original");
+    assert!(
+        run(&[
+            "changes",
+            "fixture",
+            "apply",
+            source.to_str().unwrap(),
+            "--approval",
+            token
+        ])
+        .status
+        .success()
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"updated");
+    let backups: Value =
+        serde_json::from_slice(&run(&["changes", "fixture", "backups"]).stdout).unwrap();
+    let id = backups[0]["recovery"]["id"].as_str().unwrap();
+    let approval = backups[0]["approval"].as_str().unwrap();
+    assert!(
+        !run(&["changes", "fixture", "restore", id, "--approval", "wrong"])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["changes", "fixture", "restore", id, "--approval", approval])
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"original");
+}
+
+#[test]
+fn lan_wildcard_serving_requires_authentication_and_rejects_untrusted_hosts_and_origins() {
+    let root = tempfile::tempdir().unwrap();
+    let data_root = root.path().to_str().unwrap();
+    let gateway = Gateway::start(
+        &support::binary(),
+        &fixture(),
+        &["--bind", "0.0.0.0"],
+        &[
+            ("RUNE_KIT_DATA_DIR", data_root),
+            ("RUNE_KIT_HTTP_TOKEN", "lan-test-token"),
+        ],
+    )
+    .unwrap();
+    assert!(gateway.endpoint.starts_with("http://127.0.0.1:"));
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let request = rpc("ping", json!(1), json!({}));
+    assert_eq!(
+        http(&client, &gateway.endpoint, &request)
+            .send()
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        http(&client, &gateway.endpoint, &request)
+            .bearer_auth("wrong")
+            .send()
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        http(&client, &gateway.endpoint, &request)
+            .bearer_auth("lan-test-token")
+            .send()
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        http(&client, &gateway.endpoint, &request)
+            .bearer_auth("lan-test-token")
+            .header("Host", "evil.example")
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        http(&client, &gateway.endpoint, &request)
+            .bearer_auth("lan-test-token")
+            .header("Origin", "http://localhost")
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
+}
+
+#[test]
 fn workspace_only_mode_serves_wasm_without_mounting_approved_external_paths() {
     let root = tempfile::tempdir().unwrap();
     let wasm = root.path().join("minimal.wasm");
@@ -191,6 +483,75 @@ fn env(dir: &std::path::Path) -> Vec<(String, String)> {
         "RUNE_KIT_DATA_DIR".into(),
         dir.to_string_lossy().into_owned(),
     )]
+}
+#[test]
+fn configured_remote_routes_tools_and_resources_through_real_http_gateways() {
+    let upstream_root = tempfile::tempdir().unwrap();
+    let upstream_env = env(upstream_root.path());
+    let upstream_env: Vec<_> = upstream_env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let upstream = Gateway::start(
+        &support::binary(),
+        &fixture(),
+        &["--read-only"],
+        &upstream_env,
+    )
+    .unwrap();
+    let downstream_root = tempfile::tempdir().unwrap();
+    let added = support::output(
+        Command::new(support::binary())
+            .env("RUNE_KIT_DATA_DIR", downstream_root.path())
+            .args(["remote", "add", "external", &upstream.endpoint]),
+    );
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let downstream_env = env(downstream_root.path());
+    let downstream_env: Vec<_> = downstream_env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let mut downstream = Gateway::start(
+        &support::binary(),
+        std::path::Path::new("external"),
+        &["--read-only"],
+        &downstream_env,
+    )
+    .unwrap();
+    let listed = downstream.request("tools/list", json!({})).unwrap();
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("__read"))
+        })
+        .unwrap();
+    let response = downstream
+        .request("tools/call", json!({"name":tool["name"],"arguments":{}}))
+        .unwrap();
+    assert!(response["result"]["content"].is_array(), "{response}");
+    let resources = downstream.request("resources/list", json!({})).unwrap();
+    let resource = resources["result"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| {
+            r["uri"]
+                .as_str()
+                .is_some_and(|uri| uri.starts_with("rune://external/rune://"))
+        })
+        .unwrap();
+    let response = downstream
+        .request("resources/read", json!({"uri":resource["uri"]}))
+        .unwrap();
+    assert_eq!(response["result"]["contents"][0]["uri"], resource["uri"]);
 }
 #[test]
 fn public_http_preserves_contract_errors_and_stream_cancellation() {
@@ -387,6 +748,26 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
             "Discovery was not shown: {}",
             String::from_utf8_lossy(&evidence)
         );
+        writer.write_all(b"m").unwrap();
+        writer.flush().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && !String::from_utf8_lossy(&evidence)
+                .replace("\u{1b}[1C", " ")
+                .contains("Third-party MCP servers")
+        {
+            if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
+                evidence.extend(bytes);
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&evidence)
+                .replace("\u{1b}[1C", " ")
+                .contains("Third-party MCP servers"),
+            "Remote panel did not open on m"
+        );
+        writer.write_all(b"q").unwrap();
+        writer.flush().unwrap();
         writer.write_all(b"s").unwrap();
         writer.flush().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -437,7 +818,7 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         while let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
             evidence.extend(bytes);
         }
-        let screen = String::from_utf8_lossy(&evidence);
+        let screen = String::from_utf8_lossy(&evidence).replace("\u{1b}[1C", " ");
         assert!(status.success(), "TUI process failed: {screen}");
         if attached {
             assert!(
@@ -675,12 +1056,15 @@ fn occupied_port_non_loopback_and_legacy_transport_are_actionable() {
         ),
         (
             vec!["serve", "--headless", "--bind", "0.0.0.0"],
-            "Only loopback",
+            "LAN serving requires",
         ),
         (vec!["run", "--all"], "Public stdio serving was removed"),
     ] {
         let mut command = Command::new(support::binary());
-        command.args(args).env("RUNE_KIT_DATA_DIR", root.path());
+        command
+            .args(args)
+            .env("RUNE_KIT_DATA_DIR", root.path())
+            .env_remove("RUNE_KIT_HTTP_TOKEN");
         let output = support::output(&mut command);
         assert!(!output.status.success());
         assert!(

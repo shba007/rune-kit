@@ -166,14 +166,14 @@ impl Panel {
             Paragraph::new(vec![
                 Line::styled(
                     if self.workspace_only {
-                        "Workspace-only isolation ACTIVE. Copy-back NOT ACTIVE."
+                        "Workspace-only isolation ACTIVE. Copy-back requires approval."
                     } else {
-                        "Write isolation and copy-back are NOT ACTIVE."
+                        "Write isolation NOT ACTIVE. Copy-back requires approval."
                     },
                     Style::new().fg(Color::Yellow),
                 ),
                 Line::from(if self.workspace_only {
-                    "External originals and native helpers blocked; approvals are not mounted."
+                    "Broker-aware plugins can read approved originals and stage file edits."
                 } else {
                     "Approvals record intent only; no files are copied or permissions changed."
                 }),
@@ -322,7 +322,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("Workspace-only isolation ACTIVE"));
-        assert!(text.contains("approvals are not mounted"));
+        assert!(text.contains("Broker-aware plugins"));
         let mut failed = Panel::open_at(vec!["test".into()], Ok(PathBuf::from("relative")));
         assert!(failed.store.is_err());
         failed.key(KeyCode::Char('a'));

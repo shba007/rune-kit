@@ -16,6 +16,7 @@ reqwest = { workspace = true, features = ["blocking"] }
 axum = "0.8"
 futures-util = "0.3"
 base64 = "0.22"
+getrandom = "=0.4.3"
 rune-kit-core = { path = "../core" }
 tokio.workspace = true
 serde_json.workspace = true
@@ -39,3 +40,6 @@ sha2.workspace = true
 version = "1"
 default-features = false
 features = ["user-hooks"]
+
+[features]
+native-isolation-validation = ["rune-kit-core/native-isolation-validation"]

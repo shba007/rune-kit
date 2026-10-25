@@ -13,11 +13,24 @@ pub struct Cli {
     pub json: bool,
 
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Run first-run setup again
+    Setup,
+    /// Manage third-party Streamable HTTP MCP servers
+    Remote {
+        #[command(subcommand)]
+        action: remotes::Action,
+    },
+    /// Review staged changes and explicitly approve copy-back or recovery
+    Changes {
+        plugin: String,
+        #[command(subcommand)]
+        action: ChangesAction,
+    },
     /// Start the persistent local MCP HTTP server and attached terminal dashboard
     Serve {
         /// Optional installed plugin name or artifact path (default: all installed)
@@ -34,6 +47,8 @@ pub enum Commands {
         /// Isolate WASM files to per-plugin workspaces; block native plugins and helpers
         #[arg(long)]
         workspace_only: bool,
+        #[arg(skip)]
+        selected: Vec<String>,
         #[arg(short, long, value_parser = parse_key_val)]
         param: Vec<(String, String)>,
         #[arg(long)]
@@ -116,17 +131,37 @@ struct SearchResult {
     description: String,
 }
 
+#[derive(Subcommand)]
+pub enum ChangesAction {
+    List,
+    Apply {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        approval: String,
+    },
+    Backups,
+    Restore {
+        id: String,
+        #[arg(long)]
+        approval: String,
+    },
+}
+
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .ok_or_else(|| format!("Invalid KEY=VALUE pair: {}", s))
 }
 
+mod changes_panel;
 mod config_editor;
 pub mod configuration;
 pub mod output;
+mod remote_panel;
+pub mod remotes;
 mod sandbox_panel;
 pub mod server;
+mod setup;
 pub mod tui;
 
 use crate::output::{
@@ -143,7 +178,43 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pm = PackageManager::new();
     let sm = SkillManager::new();
 
-    match cli.command {
+    let command = match cli.command {
+        Some(Commands::Setup) => setup::run().await?,
+        Some(command) => command,
+        None => match setup::saved_command()? {
+            Some(command) => command,
+            None => setup::run().await?,
+        },
+    };
+    match command {
+        Commands::Setup=>unreachable!("setup is resolved before dispatch"),
+        Commands::Remote { action } => remotes::run(action, &rune_kit_core::paths::managed_root()?, cli.json)?,
+        Commands::Changes{plugin,action}=>{
+            let broker=rune_kit_core::file_access::Broker::open(rune_kit_core::paths::sandbox_root()?,&plugin)?;
+            broker.prune_completed()?;
+            match action {
+                ChangesAction::List=>{
+                    let changes=broker.reviews()?.into_iter().map(|review|Ok(json!({"approval":review.approval_token()?,"change":review}))).collect::<Result<Vec<_>,std::io::Error>>()?;
+                    println!("{}",serde_json::to_string_pretty(&changes)?);
+                }
+                ChangesAction::Apply{path,approval}=>{
+                    let review=broker.review_for(&path)?;
+                    if approval!=review.approval_token()? {return Err("Approval does not match the current review; list and review changes again".into());}
+                    broker.apply_review(&review)?;
+                    println!("Changes copied back; recovery backup retained for seven days.");
+                }
+                ChangesAction::Backups=>{
+                    let backups=broker.recoveries()?.into_iter().map(|info|Ok(json!({"approval":info.approval_token()?,"recovery":info}))).collect::<Result<Vec<_>,std::io::Error>>()?;
+                    println!("{}",serde_json::to_string_pretty(&backups)?);
+                }
+                ChangesAction::Restore{id,approval}=>{
+                    let info=broker.recoveries()?.into_iter().find(|i|i.id==id).ok_or("Recovery record not found")?;
+                    if approval!=info.approval_token()? {return Err("Approval does not match the recovery record".into());}
+                    broker.restore(&info)?;
+                    println!("Original restored from the recovery backup.");
+                }
+            }
+        }
         Commands::Run { .. } => return Err("Public stdio serving was removed. Use `rune-kit serve --headless` and connect to http://127.0.0.1:47601/mcp (MCP HTTP 2026-07-28; Kit 0.6.0+).".into()),
         Commands::Serve {
             plugin,
@@ -151,9 +222,9 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             param,
             read_only,
             allow_tool,
-            timeout, bind, port, headless, workspace_only,
+            timeout, bind, port, headless, workspace_only, selected,
         } => {
-            if !bind.is_loopback() { return Err("Only loopback binding is supported".into()); }
+            server::validate_bind(bind)?;
             let allow_tool_for_dashboard = allow_tool.clone();
             let mut router = McpRouter::new();
             router.set_read_only(read_only);
@@ -167,19 +238,32 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) if e.kind()==std::io::ErrorKind::NotFound => Default::default(),
                 Err(e) => return Err(format!("Cannot read {}: {e}",metadata_path.display()).into()),
             };
-            let targets:Vec<_> = match plugin {
+            let remotes = remotes::read(&metadata_path.parent().unwrap().join("remotes.json"))?;
+            if remotes.keys().any(|name|lockfile.plugins.contains_key(name)) { return Err("A remote and installed plugin share a namespace; remove or rename the remote before serving".into()); }
+            let targets:Vec<_> = if !selected.is_empty() {selected} else {match plugin {
                 Some(target) if !all => vec![target],
-                _ => {let mut names:Vec<_>=lockfile.plugins.keys().cloned().collect(); names.sort(); names},
-            };
+                _ => {let mut names:Vec<_>=lockfile.plugins.keys().chain(remotes.keys()).cloned().collect(); names.sort(); names},
+            }};
             let mut dashboard_config = configuration::Configuration::read(metadata_path.parent().unwrap().join("dashboard.json"))?;
-            if workspace_only && targets.iter().any(|target| lockfile.plugins.get(target).is_some_and(|p|p.execution_kind == ExecutionKind::Native)
+            if workspace_only && targets.iter().any(|target| remotes.contains_key(target)) {
+                return Err("Workspace-only mode blocks external MCP servers: Kit cannot enforce their filesystem access. Serve a remote explicitly without --workspace-only.".into());
+            }
+            if workspace_only && targets.iter().any(|target| lockfile.plugins.get(target).is_some_and(|p|p.execution_kind == ExecutionKind::Native && !rune_kit_core::native_isolation::VALIDATED_ON_ALL_PLATFORMS)
                 || (!lockfile.plugins.contains_key(target) && !target.ends_with(".wasm"))) {
                 return Err("Workspace-only mode blocks native plugins. Select a WASM plugin explicitly, or omit --workspace-only for unenforced execution.".into());
             }
             let sandbox = if workspace_only { Some(rune_kit_core::sandbox::Sandbox::open(rune_kit_core::paths::sandbox_root()?)?) } else { None };
             let mut loaded=Vec::new(); let mut roots=Vec::new();
             for target in targets {
+                if let Some(config) = remotes.get(&target) {
+                    let token = config.token_env.as_ref().map(|key|std::env::var(key).map_err(|_|format!("Remote {target}: configured bearer-token environment variable is missing"))).transpose()?;
+                    let instance = rune_kit_core::remote::RemoteHttp::new(target.clone(), config.clone(), token)?;
+                    loaded.push(format!("{target}: external HTTP server loaded; discovery pending; filesystem not managed"));
+                    router.register(target, PluginInstance::Remote(Box::new(instance)));
+                    continue;
+                }
                 let mut params = lockfile.plugins.get(&target).map(|entry|entry.default_params.clone()).unwrap_or_default();
+                params.extend(setup::plugin_secrets(&target)?);
                 params.extend(server_params.clone());
                 if !workspace_only && let Some(root)=params.get("allowed_dir") { roots.push(format!("{target}: {root}")); }
                 let (path, kind, version) = if let Some(entry)=lockfile.plugins.get(&target) {

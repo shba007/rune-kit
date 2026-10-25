@@ -127,6 +127,23 @@ impl McpRouter {
         self.config.tool_timeout_secs = Some(timeout_secs);
     }
 
+    pub fn remove_remote(&mut self, namespace: &str) {
+        if matches!(
+            self.instances.get(namespace),
+            Some(PluginInstance::Remote(_))
+        ) {
+            self.instances.remove(namespace);
+        }
+    }
+    pub fn contains_namespace(&self, namespace: &str) -> bool {
+        self.instances.contains_key(namespace)
+    }
+    pub fn is_remote(&self, namespace: &str) -> bool {
+        matches!(
+            self.instances.get(namespace),
+            Some(PluginInstance::Remote(_))
+        )
+    }
     pub fn register(&mut self, namespace: String, instance: PluginInstance) {
         self.instances.insert(namespace, instance);
     }
@@ -154,12 +171,10 @@ impl McpRouter {
         let timeout = self.config.tool_timeout_secs.unwrap_or(30);
         let started = std::time::Instant::now();
         for instance in self.instances.values_mut() {
-            if let PluginInstance::Native(native) = instance {
-                native.set_operation_context(
-                    operation_cancel.clone(),
-                    Some(Duration::from_secs(timeout)),
-                );
-            }
+            instance.set_operation_context(
+                operation_cancel.clone(),
+                Some(Duration::from_secs(timeout)),
+            );
         }
         let active_wasm = self.wasm_operation.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
@@ -188,9 +203,7 @@ impl McpRouter {
         let _ = watcher.join();
         self.request_cancel = Arc::new(AtomicBool::new(false));
         for instance in self.instances.values_mut() {
-            if let PluginInstance::Native(native) = instance {
-                native.set_operation_context(self.request_cancel.clone(), None);
-            }
+            instance.set_operation_context(self.request_cancel.clone(), None);
         }
         if expired.load(Ordering::Relaxed) {
             let request: Value = serde_json::from_str(request).unwrap_or(Value::Null);
@@ -448,6 +461,16 @@ impl McpRouter {
                                     }
                                     tool_obj["annotations"] = ann_json;
                                 }
+                                if let PluginInstance::Remote(remote) = instance
+                                    && let Some(raw) = remote.tools.get(&tool.name)
+                                {
+                                    let mut preserved = raw.clone();
+                                    preserved["name"] = tool_obj["name"].clone();
+                                    if tool_obj.get("annotations").is_some() {
+                                        preserved["annotations"] = tool_obj["annotations"].clone();
+                                    }
+                                    tool_obj = preserved;
+                                }
                                 all_tools.push(tool_obj);
                             }
                         }
@@ -487,12 +510,14 @@ impl McpRouter {
                     match instance.list_resources() {
                         Ok(resources) => {
                             for res in resources {
-                                all_resources.push(json!({
-                                    "uri": namespace_resource_uri(ns, &res.uri),
-                                    "name": res.name,
-                                    "description": res.description,
-                                    "mimeType": res.mime_type
-                                }));
+                                let mut value = json!({"uri": namespace_resource_uri(ns, &res.uri), "name":res.name,"description":res.description,"mimeType":res.mime_type});
+                                if let PluginInstance::Remote(remote) = instance {
+                                    if let Some(raw) = remote.resources.get(&res.uri) {
+                                        value = raw.clone();
+                                    }
+                                    value["uri"] = json!(format!("rune://{ns}/{}", res.uri));
+                                }
+                                all_resources.push(value);
                             }
                         }
                         Err(err) => {
@@ -521,11 +546,14 @@ impl McpRouter {
                     match instance.list_prompts() {
                         Ok(prompts) => {
                             for prompt in prompts {
-                                all_prompts.push(json!({
-                                    "name": format!("{}__{}", ns, prompt.name),
-                                    "description": prompt.description,
-                                    "arguments": prompt.arguments
-                                }));
+                                let mut value = json!({"name": format!("{}__{}", ns, prompt.name),"description":prompt.description,"arguments":prompt.arguments});
+                                if let PluginInstance::Remote(remote) = instance {
+                                    if let Some(raw) = remote.prompts.get(&prompt.name) {
+                                        value = raw.clone();
+                                    }
+                                    value["name"] = json!(format!("{}__{}", ns, prompt.name));
+                                }
+                                all_prompts.push(value);
                             }
                         }
                         Err(err) => {
@@ -673,6 +701,9 @@ impl McpRouter {
 
                     match call_res {
                         Ok(res) => {
+                            if matches!(instance, PluginInstance::Remote(_)) {
+                                return Some(json!({"jsonrpc":"2.0","id":id,"result":res}));
+                            }
                             let content = if let Some(content_arr) =
                                 res.get("content").and_then(|c| c.as_array())
                             {

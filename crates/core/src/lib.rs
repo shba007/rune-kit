@@ -1,8 +1,12 @@
+pub mod file_access;
+pub mod headers;
 pub mod manifest;
+pub mod native_isolation;
 pub mod package;
 pub mod protocol;
 pub mod provision;
 pub mod registry;
+pub mod remote;
 pub mod runtime;
 pub mod sandbox;
 

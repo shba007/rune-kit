@@ -32,7 +32,20 @@ impl Plugin {
                     .plugins
                     .get(&self.name)
                     .and_then(|p| p.get(key))
-                    .or_else(|| settings.shared.get(key))
+                    .or_else(|| {
+                        if field.secret {
+                            None
+                        } else {
+                            settings.shared.get(key)
+                        }
+                    })
+                    .or_else(|| {
+                        if field.secret {
+                            self.params.get(key)
+                        } else {
+                            None
+                        }
+                    })
                 {
                     validate(field, value)?;
                     if locked(key, field, &self.manifest) {
@@ -58,14 +71,20 @@ impl Plugin {
 
     pub fn load(&self, settings: &Settings) -> Result<PluginInstance, String> {
         let params = self.parameters(settings)?;
-        if self.workspace.is_some() && self.kind == ExecutionKind::Native {
+        if self.workspace.is_some()
+            && self.kind == ExecutionKind::Native
+            && !rune_kit_core::native_isolation::VALIDATED_ON_ALL_PLATFORMS
+        {
             return Err("Native plugins are blocked in workspace-only mode".into());
         }
         match self.kind {
             ExecutionKind::Wasm => {
                 let bytes = std::fs::read(&self.path).map_err(|_| "Cannot read plugin payload")?;
                 if let Some(workspace) = &self.workspace {
-                    return WasmPluginInstance::load_in_workspace(&self.name,bytes,params,self.manifest.clone(),workspace)
+                    let root=rune_kit_core::paths::sandbox_root().map_err(|_|"Cannot resolve sandbox storage")?;
+                    let sandbox=rune_kit_core::sandbox::Sandbox::open(root).map_err(|_|"Cannot open sandbox storage")?;
+                    if sandbox.workspace(&self.name).map_err(|_|"Cannot resolve plugin workspace")?!=*workspace {return Err("Plugin workspace does not match sandbox storage".into());}
+                    return WasmPluginInstance::load_with_file_access(&self.name,bytes,params,self.manifest.clone(),&sandbox)
                         .map(|p|PluginInstance::Wasm(Box::new(p)))
                         .map_err(|_|"Cannot load workspace-only WASM plugin; native helpers and external paths are unavailable".into());
                 }
@@ -78,6 +97,7 @@ impl Plugin {
                 .map(|p| PluginInstance::Wasm(Box::new(p)))
             }
             ExecutionKind::Native => {
+                if let Some(workspace)=&self.workspace { return NativeSidecar::new_in_workspace(&self.name,&self.path,params,self.manifest.clone(),workspace).map(|p|PluginInstance::Native(Box::new(p))).map_err(|_|"Cannot launch isolated native plugin; no unconfined fallback".into()); }
                 NativeSidecar::new(&self.name, &self.path, params, Some(self.manifest.clone()))
                     .map(|p| PluginInstance::Native(Box::new(p)))
             }
