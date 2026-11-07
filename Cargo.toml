@@ -1,5 +1,22 @@
+[package]
+name = "rune-kit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Rune MCP Engine & Package Manager"
+repository = "https://github.com/shba007/rune-kit.git"
+
+[[bin]]
+name = "rune-kit"
+path = "src/main.rs"
+
+[lib]
+name = "rune_kit"
+path = "src/lib.rs"
+
 [workspace]
-members = ["crates/core", "crates/cli", "xtask"]
+members = [".", "xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -23,6 +40,59 @@ flate2 = "1.0"
 tar = "0.4"
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 toml = "1.1.6"
+
+[features]
+default = []
+native-isolation-validation = []
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+extism.workspace = true
+sha2.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+dirs.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+flate2.workspace = true
+tar.workspace = true
+zip.workspace = true
+jsonschema = { version = "0.60", default-features = false }
+clap.workspace = true
+axum = "0.8"
+futures-util = "0.3"
+getrandom = "=0.4.3"
+ratatui = "0.30.2"
+crossterm = "0.29"
+
+[dev-dependencies]
+xtask = { path = "xtask" }
+tempfile = "3"
+portable-pty = "0.9"
+vt100 = "=0.18.1"
+wat = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_Com",
+] }
 
 [profile.release]
 opt-level = 3

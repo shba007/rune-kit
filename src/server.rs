@@ -119,15 +119,15 @@ fn installed_packages(root: &std::path::Path) -> Result<Value, String> {
     }
     let plugins: rune_kit_core::Lockfile = read(&root.join("installed.json"))?;
     let skills: rune_kit_core::manifest::SkillLockfile = read(&root.join("installed_skills.json"))?;
-    let mut plugins: Vec<_> = plugins
-        .plugins
+    let mut mcps: Vec<_> = plugins
+        .mcps
         .values()
         .map(|p| json!({"name":p.name,"version":p.version,"description":p.description}))
         .collect();
     let mut skills: Vec<_> = skills.skills.values().map(|s| json!({"name":s.name,"version":s.version,"description":s.description,"author":s.author})).collect();
-    plugins.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    mcps.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     skills.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-    Ok(json!({"plugins":plugins,"skills":skills}))
+    Ok(json!({"mcps":mcps,"skills":skills,"plugins":mcps}))
 }
 
 async fn packages(State(state): State<Arc<Shared>>) -> Response {
@@ -174,7 +174,8 @@ async fn package_operation(
         )
             .into_response();
     }
-    if !matches!(request.kind.as_str(), "plugin" | "skill")
+    let is_mcp = matches!(request.kind.as_str(), "mcp" | "plugin");
+    if (!is_mcp && request.kind != "skill")
         || request.name.is_empty()
         || request.name.len() > 128
         || request.name.chars().any(char::is_control)
@@ -186,8 +187,11 @@ async fn package_operation(
         Ok(value) => value,
         Err(message) => return (StatusCode::CONFLICT, message).into_response(),
     };
-    let list = if request.kind == "plugin" {
-        &packages["plugins"]
+    let list = if is_mcp {
+        packages
+            .get("mcps")
+            .or_else(|| packages.get("plugins"))
+            .unwrap()
     } else {
         &packages["skills"]
     };
@@ -198,15 +202,13 @@ async fn package_operation(
         return (StatusCode::NOT_FOUND, "Package is not installed").into_response();
     }
     if action == "remove" {
-        let result = if request.kind == "plugin" {
+        let result = if is_mcp {
             rune_kit_core::PackageManager::new().uninstall(&request.name)
         } else {
             rune_kit_core::SkillManager::new().uninstall_skill(&request.name)
         };
         return match result {
-            Ok(true) => {
-                axum::Json(json!({"restart_required":request.kind == "plugin"})).into_response()
-            }
+            Ok(true) => axum::Json(json!({"restart_required": is_mcp})).into_response(),
             Ok(false) => (StatusCode::NOT_FOUND, "Package is not installed").into_response(),
             Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
         };
@@ -215,7 +217,7 @@ async fn package_operation(
         return StatusCode::NOT_FOUND.into_response();
     }
     let names = vec![request.name.clone()];
-    let statuses = if request.kind == "plugin" {
+    let statuses = if is_mcp {
         rune_kit_core::PackageManager::new()
             .check_plugin_updates(Some(&names))
             .await
@@ -283,9 +285,9 @@ async fn install_package(
             .into_response();
     }
     let result = match request.kind.as_str() {
-        "plugin" => rune_kit_core::PackageManager::new().install_new(target, request.version, request.prefer_native).await.map(|p| json!({"kind":"plugin","name":p.name,"version":p.version,"restart_required":true})),
+        "mcp" | "plugin" => rune_kit_core::PackageManager::new().install_new(target, request.version, request.prefer_native).await.map(|p| json!({"kind":"mcp","name":p.name,"version":p.version,"restart_required":true})),
         "skill" => rune_kit_core::SkillManager::new().install_new_skill(target, request.version).await.map(|s| json!({"kind":"skill","name":s.name,"version":s.version,"restart_required":false})),
-        _ => return (StatusCode::BAD_REQUEST, "Choose plugin or skill").into_response(),
+        _ => return (StatusCode::BAD_REQUEST, "Choose mcp or skill").into_response(),
     };
     match result {
         Ok(result) => axum::Json(result).into_response(),
@@ -958,6 +960,149 @@ async fn shutdown_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+pub struct EmbeddedServer {
+    pub endpoint: String,
+    pub address: SocketAddr,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl EmbeddedServer {
+    pub async fn shutdown(mut self) -> Result<(), String> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(5), &mut self.task).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(err)) => Err(format!("Embedded Kit server task failed: {err}")),
+            Err(_) => {
+                self.task.abort();
+                let _ = self.task.await;
+                Err("Embedded Kit server did not stop within timeout".into())
+            }
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
+}
+
+pub async fn start_embedded(
+    router: McpRouter,
+    options: Options,
+    configuration: crate::configuration::Configuration,
+) -> Result<EmbeddedServer, String> {
+    validate_bind(options.bind).map_err(|e| e.to_string())?;
+    let listener = tokio::net::TcpListener::bind((options.bind, options.port))
+        .await
+        .map_err(|e| {
+            format!(
+                "Cannot bind Kit HTTP server to {}:{}: {e}",
+                options.bind, options.port
+            )
+        })?;
+    let address = listener.local_addr().map_err(|e| e.to_string())?;
+    let connect_address = if address.ip().is_unspecified() {
+        SocketAddr::new(
+            if address.is_ipv4() {
+                "127.0.0.1".parse().unwrap()
+            } else {
+                "::1".parse().unwrap()
+            },
+            address.port(),
+        )
+    } else {
+        address
+    };
+    let endpoint = format!("http://{connect_address}/mcp");
+    let snapshot = Arc::new(Mutex::new(Snapshot {
+        bind_address: address.to_string(),
+        workspace_only: options.workspace_only,
+        endpoint: endpoint.clone(),
+        status: "listening".into(),
+        started: Instant::now(),
+        plugins: options.plugins,
+        read_only: options.read_only,
+        allowed_tools: options.allowed_tools,
+        roots: options.roots,
+        timeout: options.timeout,
+        executable: std::env::current_exe().unwrap_or_default(),
+        data_root: rune_kit_core::paths::managed_root().unwrap_or_default(),
+        active: Vec::new(),
+        recent: VecDeque::new(),
+        tools: Vec::new(),
+        discovery_note: "Press d to discover tools in this server".into(),
+    }));
+    let configuration = Arc::new(Mutex::new(configuration));
+    let state = Arc::new(Shared {
+        router: Arc::new(Mutex::new(router)),
+        configuration: configuration.clone(),
+        snapshot: snapshot.clone(),
+        address,
+        sequence: AtomicU64::new(1),
+        permits: Arc::new(Semaphore::new(32)),
+        flags: Mutex::new(HashMap::new()),
+        token: http_token().map_err(|e| e.to_string())?,
+    });
+    let app = Router::new()
+        .route("/mcp", post(handle))
+        .route(
+            "/management/config",
+            get(configuration_fields).put(update_configuration),
+        )
+        .route(
+            "/management/remotes",
+            get(remote_servers).put(update_remote_server),
+        )
+        .route("/management/packages", get(packages).post(install_package))
+        .route("/management/packages/{action}", post(package_operation))
+        .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            security,
+        ))
+        .with_state(state.clone());
+
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_state = state.clone();
+    let shutdown = async move {
+        let _ = stop_rx.await;
+        shutdown_state.snapshot.lock().unwrap().status = "stopping".into();
+        for flag in shutdown_state.flags.lock().unwrap().values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+    };
+
+    let task = tokio::spawn(async move {
+        let res = axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await;
+        state.snapshot.lock().unwrap().status = "stopped".into();
+        for flag in state.flags.lock().unwrap().values() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        res.map_err(|e| e.to_string())
+    });
+
+    Ok(EmbeddedServer {
+        endpoint,
+        address,
+        stop: Some(stop_tx),
+        task,
+    })
+}
+
+pub async fn start_default_embedded(
+    bind: std::net::IpAddr,
+    port: u16,
+) -> Result<EmbeddedServer, String> {
+    let (router, options, configuration) =
+        crate::load_installed_environment(&[], false, 30, false, &[], &[], bind, port, true)
+            .map_err(|e| e.to_string())?;
+    start_embedded(router, options, configuration).await
 }
 
 pub async fn serve(

@@ -1,6 +1,6 @@
 #![cfg(feature = "native-isolation-validation")]
 mod support;
-use rune_kit_core::native_isolation::{Policy, Process, spawn_for_validation};
+use rune_kit::native_isolation::{Policy, Process, spawn_for_validation};
 use std::{
     io::{BufRead, BufReader, Write},
     path::Path,
@@ -21,7 +21,7 @@ impl Running {
         ));
         let output = support::output(
             Command::new("rustc")
-                .arg(support::root().join("crates/cli/tests/support/isolation_fixture.rs"))
+                .arg(support::root().join("tests/support/isolation_fixture.rs"))
                 .arg("-o")
                 .arg(&binary),
         );

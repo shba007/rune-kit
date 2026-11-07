@@ -1,6 +1,6 @@
-use rune_kit_cli::main as library_main;
+use rune_kit::main as library_main;
 fn main() {
-    if let Some(result) = rune_kit_core::native_isolation::worker_entry() {
+    if let Some(result) = rune_kit::native_isolation::worker_entry() {
         if result.is_err() {
             eprintln!("Native isolation worker failed; plugin was not launched");
             std::process::exit(1);

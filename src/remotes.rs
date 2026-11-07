@@ -112,7 +112,7 @@ pub fn run(
             if installed.exists() {
                 let installed: rune_kit_core::Lockfile =
                     serde_json::from_slice(&std::fs::read(installed)?)?;
-                if installed.plugins.contains_key(&name) {
+                if installed.mcps.contains_key(&name) {
                     return Err("Namespace already belongs to an installed plugin".into());
                 }
             }
@@ -204,10 +204,7 @@ pub(crate) fn save_dashboard(
             &std::fs::read(installed).map_err(|_| "Cannot read installed plugins")?,
         )
         .map_err(|_| "Cannot parse installed plugins")?;
-        if servers
-            .keys()
-            .any(|name| installed.plugins.contains_key(name))
-        {
+        if servers.keys().any(|name| installed.mcps.contains_key(name)) {
             return Err("Namespace already belongs to an installed plugin".into());
         }
     }

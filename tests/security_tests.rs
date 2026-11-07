@@ -1,6 +1,6 @@
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use rune_kit_core::resolve_host_env_params;
+use rune_kit::resolve_host_env_params;
 use tar::Builder;
 
 #[test]

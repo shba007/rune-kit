@@ -76,6 +76,7 @@ fn migrate_sources(sources: &[PathBuf], destination: &Path) -> io::Result<()> {
             return Err(io::Error::other("Migration refuses symbolic links"));
         }
         for name in [
+            "mcps",
             "plugins",
             "skills",
             "_bin",
@@ -121,6 +122,7 @@ pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
     }
     let mut files = Vec::new();
     for name in [
+        "mcps",
         "plugins",
         "skills",
         "_bin",

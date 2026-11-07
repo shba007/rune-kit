@@ -133,7 +133,7 @@ impl Sandbox {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        let path = self.root.join("plugins").join(key);
+        let path = self.root.join("mcps").join(key);
         directory(&path)?;
         Ok(path)
     }
@@ -316,7 +316,7 @@ mod tests {
         ] {
             let workspace = sandbox.workspace(name).unwrap();
             assert!(workspace.starts_with(sandbox.root()));
-            assert_eq!(workspace.parent().unwrap(), sandbox.root().join("plugins"));
+            assert_eq!(workspace.parent().unwrap(), sandbox.root().join("mcps"));
             assert_eq!(workspace, sandbox.workspace(name).unwrap());
         }
         assert_ne!(
@@ -377,7 +377,7 @@ mod tests {
         symlink(&outside, fixture.0.join("linked-root")).unwrap();
         assert!(Sandbox::open(fixture.0.join("linked-root")).is_err());
         let sandbox = fixture.sandbox();
-        symlink(&outside, sandbox.root().join("plugins")).unwrap();
+        symlink(&outside, sandbox.root().join("mcps")).unwrap();
         assert!(sandbox.workspace("test").is_err());
         assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
     }

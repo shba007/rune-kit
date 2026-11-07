@@ -1,4 +1,4 @@
-use rune_kit_core::{
+use rune_kit::{
     protocol::McpRouter,
     remote::{RemoteConfig, RemoteHttp},
     runtime::PluginInstance,
@@ -129,7 +129,7 @@ fn current_routes_json_and_sse_preserving_metadata_and_resource_identity() {
                 assert_eq!(req.headers["mcp-name"], "echo");
                 assert_eq!(
                     req.headers["mcp-param-text"],
-                    rune_kit_core::headers::encode("snow ☃")
+                    rune_kit::headers::encode("snow ☃")
                 );
                 let event = format!(
                     "data: {}\r\n\r\ndata: {}\r\n\r\n",
@@ -290,9 +290,9 @@ fn cancellation_and_deadline_stop_waiting_for_upstream() {
         let error = remote.list_tools().unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(if cancel_request {
-            matches!(error, rune_kit_core::runtime::RuntimeError::Cancelled)
+            matches!(error, rune_kit::runtime::RuntimeError::Cancelled)
         } else {
-            matches!(error, rune_kit_core::runtime::RuntimeError::Timeout(_))
+            matches!(error, rune_kit::runtime::RuntimeError::Timeout(_))
         });
         trigger.join().unwrap();
         worker.join().unwrap();

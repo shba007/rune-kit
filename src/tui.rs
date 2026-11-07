@@ -631,7 +631,8 @@ mod tests {
         assert!(configuration.contains("/workspace"));
         assert!(render(&snapshot, 60, 20, false, false).contains("Plugins"));
         assert!(render(&snapshot, 30, 8, false, false).contains("Enlarge terminal"));
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let _ = std::fs::create_dir_all(&root);
         let suffix = if std::env::var_os("RUNE_ASCII").is_some() {
             "-plain"
         } else {

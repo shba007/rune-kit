@@ -153,6 +153,37 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("Invalid KEY=VALUE pair: {}", s))
 }
 
+pub mod file_access;
+pub mod headers;
+pub mod manifest;
+pub mod native_isolation;
+pub mod package;
+pub mod paths;
+pub mod protocol;
+pub mod provision;
+pub mod registry;
+pub mod remote;
+pub mod runtime;
+pub mod sandbox;
+
+pub use manifest::{
+    BinaryDependencySpec, Capabilities, ExecCapability, ExecutionKind, FilesystemCapability,
+    InstalledMcp, InstalledPlugin, InstalledSkill, Lockfile, PluginInfo, PluginManifest,
+    PluginUpdateStatus, PromptArgument, PromptDefinition, RegistryPluginSummary,
+    RegistrySkillSummary, ResourceDefinition, SkillFile, SkillLockfile, SkillRow, ToolAnnotations,
+    ToolDefinition, ToolRuleSpec,
+};
+pub use package::{PackageError, PackageManager, SkillManager, is_newer_version};
+pub use protocol::{McpRouter, RouterConfig};
+pub use provision::{BinaryProvisioner, ProvisionError};
+pub use runtime::{
+    NativeSidecar, PluginInstance, RuntimeError, WasmPluginInstance, resolve_host_env_params,
+};
+
+extern crate self as rune_kit;
+extern crate self as rune_kit_cli;
+extern crate self as rune_kit_core;
+
 mod changes_panel;
 mod config_editor;
 pub mod configuration;
@@ -166,10 +197,6 @@ pub mod tui;
 
 use crate::output::{
     Column, Table, render_list_table, render_update_status_table, truncate_display,
-};
-use rune_kit_core::{
-    ExecutionKind, McpRouter, PackageManager, PluginInstance, PluginUpdateStatus, SkillManager,
-    is_newer_version, resolve_host_env_params,
 };
 
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -225,82 +252,25 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout, bind, port, headless, workspace_only, selected,
         } => {
             server::validate_bind(bind)?;
-            let allow_tool_for_dashboard = allow_tool.clone();
-            let mut router = McpRouter::new();
-            router.set_read_only(read_only);
-            if !allow_tool.is_empty() { router.set_allowed_tools(allow_tool); }
-            router.set_tool_timeout(timeout);
-            let mut server_params = resolve_host_env_params();
-            server_params.extend(param);
-            let metadata_path = rune_kit_core::paths::managed_root()?.join("installed.json");
-            let lockfile: rune_kit_core::Lockfile = match std::fs::read(&metadata_path) {
-                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e|format!("Cannot parse {}: {e}. Repair installed metadata before serving.",metadata_path.display()))?,
-                Err(e) if e.kind()==std::io::ErrorKind::NotFound => Default::default(),
-                Err(e) => return Err(format!("Cannot read {}: {e}",metadata_path.display()).into()),
+            let selected_targets: Vec<String> = if !selected.is_empty() {
+                selected
+            } else if let Some(target) = plugin {
+                if !all { vec![target] } else { vec![] }
+            } else {
+                vec![]
             };
-            let remotes = remotes::read(&metadata_path.parent().unwrap().join("remotes.json"))?;
-            if remotes.keys().any(|name|lockfile.plugins.contains_key(name)) { return Err("A remote and installed plugin share a namespace; remove or rename the remote before serving".into()); }
-            let targets:Vec<_> = if !selected.is_empty() {selected} else {match plugin {
-                Some(target) if !all => vec![target],
-                _ => {let mut names:Vec<_>=lockfile.plugins.keys().chain(remotes.keys()).cloned().collect(); names.sort(); names},
-            }};
-            let mut dashboard_config = configuration::Configuration::read(metadata_path.parent().unwrap().join("dashboard.json"))?;
-            if workspace_only && targets.iter().any(|target| remotes.contains_key(target)) {
-                return Err("Workspace-only mode blocks external MCP servers: Kit cannot enforce their filesystem access. Serve a remote explicitly without --workspace-only.".into());
-            }
-            if workspace_only && targets.iter().any(|target| lockfile.plugins.get(target).is_some_and(|p|p.execution_kind == ExecutionKind::Native && !rune_kit_core::native_isolation::VALIDATED_ON_ALL_PLATFORMS)
-                || (!lockfile.plugins.contains_key(target) && !target.ends_with(".wasm"))) {
-                return Err("Workspace-only mode blocks native plugins. Select a WASM plugin explicitly, or omit --workspace-only for unenforced execution.".into());
-            }
-            let sandbox = if workspace_only { Some(rune_kit_core::sandbox::Sandbox::open(rune_kit_core::paths::sandbox_root()?)?) } else { None };
-            let mut loaded=Vec::new(); let mut roots=Vec::new();
-            for target in targets {
-                if let Some(config) = remotes.get(&target) {
-                    let token = config.token_env.as_ref().map(|key|std::env::var(key).map_err(|_|format!("Remote {target}: configured bearer-token environment variable is missing"))).transpose()?;
-                    let instance = rune_kit_core::remote::RemoteHttp::new(target.clone(), config.clone(), token)?;
-                    loaded.push(format!("{target}: external HTTP server loaded; discovery pending; filesystem not managed"));
-                    router.register(target, PluginInstance::Remote(Box::new(instance)));
-                    continue;
-                }
-                let mut params = lockfile.plugins.get(&target).map(|entry|entry.default_params.clone()).unwrap_or_default();
-                params.extend(setup::plugin_secrets(&target)?);
-                params.extend(server_params.clone());
-                if !workspace_only && let Some(root)=params.get("allowed_dir") { roots.push(format!("{target}: {root}")); }
-                let (path, kind, version) = if let Some(entry)=lockfile.plugins.get(&target) {
-                    (pm.get_plugin_path(&target).ok_or_else(||format!("Installed plugin {target} has no payload. Reinstall it before serving."))?,entry.execution_kind.clone(),entry.version.clone())
-                } else {
-                    let path=std::path::PathBuf::from(&target);
-                    let kind=if path.extension().is_some_and(|v|v=="wasm") {ExecutionKind::Wasm} else {ExecutionKind::Native};
-                    (path,kind,"local artifact".into())
-                };
-                let spec = configuration::Plugin { name: target.clone(), path: path.clone(), kind: kind.clone(), params: params.clone(),
-                    workspace: sandbox.as_ref().map(|s|s.workspace(&target)).transpose()?,
-                    manifest: lockfile.plugins.get(&target).and_then(|p| p.manifest.clone()).or_else(||path.parent().and_then(|parent|rune_kit_core::PluginManifest::from_file(parent.join("plugin.toml")).ok())).unwrap_or_default() };
-                if let Some(workspace) = &spec.workspace { roots.push(format!("{target}: /workspace ({})",workspace.display())); }
-                let instance = if workspace_only || lockfile.plugins.contains_key(&target) {
-                    spec.load(dashboard_config.settings()).map_err(|e| format!("Cannot load plugin {target}: {e}"))?
-                } else {
-                    match kind {
-                        ExecutionKind::Wasm => PluginInstance::load_wasm_from_file(&target,path,params),
-                        ExecutionKind::Native => PluginInstance::load_native_from_file(&target,path,params),
-                    }.map_err(|e|format!("Cannot load plugin {target}: {e}"))?
-                };
-                dashboard_config.plugins.push(spec);
-                loaded.push(format!("{target} {version}: loaded ({kind:?}); discovery pending"));
-                if let Some(manifest) = lockfile.plugins.get(&target).and_then(|entry| entry.manifest.as_ref()) {
-                    for dependency in manifest.dependencies.binaries.keys() {
-                        let directory = metadata_path.parent().unwrap().join("_bin").join(dependency);
-                        let verified = std::fs::read_dir(directory).is_ok_and(|entries| entries.flatten().any(|entry|
-                            entry.path().join(".verified").is_file() && (entry.path().join(dependency).is_file()
-                                || entry.path().join(format!("{dependency}.exe")).is_file())));
-                        if !verified {
-                            loaded.push(format!("{target}: dependency {dependency} is not verified locally. Reinstall {target} to provision it; optional dependencies may be unused."));
-                        }
-                    }
-                }
-                router.register(target,instance);
-            }
-            server::serve(router,server::Options {bind,port,headless,workspace_only,read_only,allowed_tools:allow_tool_for_dashboard,timeout,plugins:loaded,roots}, dashboard_config).await?;
+            let (router, options, dashboard_config) = load_installed_environment(
+                &selected_targets,
+                read_only,
+                timeout,
+                workspace_only,
+                &allow_tool,
+                &param,
+                bind,
+                port,
+                headless,
+            )?;
+            server::serve(router, options, dashboard_config).await?;
         }
 
         Commands::Install {
@@ -436,7 +406,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if cli.json {
                 let plugins_json: Vec<_> = lockfile
-                    .plugins
+                    .mcps
                     .values()
                     .map(|p| {
                         let kind_label = match (&p.native_binary_path, &p.execution_kind) {
@@ -481,8 +451,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            if !lockfile.plugins.is_empty() {
-                println!("\nInstalled Plugins ({}):", lockfile.plugins.len());
+            if !lockfile.mcps.is_empty() {
+                println!("\nInstalled MCP Servers ({}):", lockfile.mcps.len());
                 render_list_table(&lockfile).render();
             }
 
@@ -502,10 +472,10 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 t.render();
             }
 
-            let has_content = !lockfile.plugins.is_empty() || !skill_lockfile.skills.is_empty();
+            let has_content = !lockfile.mcps.is_empty() || !skill_lockfile.skills.is_empty();
             if !has_content {
                 println!(
-                    "No artifacts installed. Use `rune-kit install <name>` for plugins or `rune-kit install <path>` for skills."
+                    "No artifacts installed. Use `rune-kit install <name>` for MCPs or `rune-kit install <path>` for skills."
                 );
                 return Ok(());
             }
@@ -520,7 +490,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let plugins_json: Vec<_> = plugin_available
                     .iter()
                     .map(|p| {
-                        let current = lockfile.plugins.get(&p.name).map(|e| e.version.as_str());
+                        let current = lockfile.mcps.get(&p.name).map(|e| e.version.as_str());
                         json!({
                             "name": p.name,
                             "installed_version": current,
@@ -578,7 +548,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         (false, false) => "-",
                     };
                     let current = lockfile
-                        .plugins
+                        .mcps
                         .get(&p.name)
                         .map(|e| e.version.as_str())
                         .unwrap_or("-");
@@ -681,7 +651,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .get(&item.name)
                                 .map(|s| s.version.as_str())
                         } else {
-                            lockfile.plugins.get(&item.name).map(|p| p.version.as_str())
+                            lockfile.mcps.get(&item.name).map(|p| p.version.as_str())
                         };
                         json!({
                             "type": item.ty,
@@ -724,7 +694,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or("-")
                 } else {
                     lockfile
-                        .plugins
+                        .mcps
                         .get(&item.name)
                         .map(|p| p.version.as_str())
                         .unwrap_or("-")
@@ -985,4 +955,193 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn load_installed_environment(
+    selected: &[String],
+    read_only: bool,
+    timeout: u64,
+    workspace_only: bool,
+    allow_tool: &[String],
+    param: &[(String, String)],
+    bind: std::net::IpAddr,
+    port: u16,
+    headless: bool,
+) -> Result<(McpRouter, server::Options, configuration::Configuration), Box<dyn std::error::Error>>
+{
+    let pm = PackageManager::new();
+    let allow_tool_for_dashboard = allow_tool.to_vec();
+    let mut router = McpRouter::new();
+    router.set_read_only(read_only);
+    if !allow_tool.is_empty() {
+        router.set_allowed_tools(allow_tool.to_vec());
+    }
+    router.set_tool_timeout(timeout);
+    let mut server_params = resolve_host_env_params();
+    server_params.extend(param.iter().cloned());
+    let metadata_path = rune_kit_core::paths::managed_root()?.join("installed.json");
+    let lockfile: rune_kit_core::Lockfile = match std::fs::read(&metadata_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            format!(
+                "Cannot parse {}: {e}. Repair installed metadata before serving.",
+                metadata_path.display()
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(e) => return Err(format!("Cannot read {}: {e}", metadata_path.display()).into()),
+    };
+    let remotes = remotes::read(&metadata_path.parent().unwrap().join("remotes.json"))?;
+    if remotes.keys().any(|name| lockfile.mcps.contains_key(name)) {
+        return Err("A remote and installed plugin share a namespace; remove or rename the remote before serving".into());
+    }
+    let targets: Vec<String> = if !selected.is_empty() {
+        selected.to_vec()
+    } else {
+        let mut names: Vec<_> = lockfile
+            .mcps
+            .keys()
+            .chain(remotes.keys())
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    };
+    let mut dashboard_config =
+        configuration::Configuration::read(metadata_path.parent().unwrap().join("dashboard.json"))?;
+    if workspace_only && targets.iter().any(|target| remotes.contains_key(target)) {
+        return Err("Workspace-only mode blocks external MCP servers: Kit cannot enforce their filesystem access. Serve a remote explicitly without --workspace-only.".into());
+    }
+    if workspace_only
+        && targets.iter().any(|target| {
+            lockfile.mcps.get(target).is_some_and(|p| {
+                p.execution_kind == ExecutionKind::Native
+                    && !rune_kit_core::native_isolation::VALIDATED_ON_ALL_PLATFORMS
+            }) || (!lockfile.mcps.contains_key(target) && !target.ends_with(".wasm"))
+        })
+    {
+        return Err("Workspace-only mode blocks native plugins. Select a WASM plugin explicitly, or omit --workspace-only for unenforced execution.".into());
+    }
+    let sandbox = if workspace_only {
+        Some(rune_kit_core::sandbox::Sandbox::open(
+            rune_kit_core::paths::sandbox_root()?,
+        )?)
+    } else {
+        None
+    };
+    let mut loaded = Vec::new();
+    let mut roots = Vec::new();
+    for target in &targets {
+        if let Some(config) = remotes.get(target) {
+            let token = config.token_env.as_ref().map(|key|std::env::var(key).map_err(|_|format!("Remote {target}: configured bearer-token environment variable is missing"))).transpose()?;
+            let instance =
+                rune_kit_core::remote::RemoteHttp::new(target.clone(), config.clone(), token)?;
+            loaded.push(format!(
+                "{target}: external HTTP server loaded; discovery pending; filesystem not managed"
+            ));
+            router.register(target.clone(), PluginInstance::Remote(Box::new(instance)));
+            continue;
+        }
+        let mut params = lockfile
+            .mcps
+            .get(target)
+            .map(|entry| entry.default_params.clone())
+            .unwrap_or_default();
+        params.extend(setup::plugin_secrets(target)?);
+        params.extend(server_params.clone());
+        if !workspace_only && let Some(root) = params.get("allowed_dir") {
+            roots.push(format!("{target}: {root}"));
+        }
+        let (path, kind, version) = if let Some(entry) = lockfile.mcps.get(target) {
+            (
+                pm.get_plugin_path(target).ok_or_else(|| {
+                    format!(
+                        "Installed plugin {target} has no payload. Reinstall it before serving."
+                    )
+                })?,
+                entry.execution_kind.clone(),
+                entry.version.clone(),
+            )
+        } else {
+            let path = std::path::PathBuf::from(target);
+            let kind = if path.extension().is_some_and(|v| v == "wasm") {
+                ExecutionKind::Wasm
+            } else {
+                ExecutionKind::Native
+            };
+            (path, kind, "local artifact".into())
+        };
+        let spec = configuration::Plugin {
+            name: target.clone(),
+            path: path.clone(),
+            kind: kind.clone(),
+            params: params.clone(),
+            workspace: sandbox.as_ref().map(|s| s.workspace(target)).transpose()?,
+            manifest: lockfile
+                .mcps
+                .get(target)
+                .and_then(|p| p.manifest.clone())
+                .or_else(|| {
+                    path.parent().and_then(|parent| {
+                        rune_kit_core::PluginManifest::from_file(parent.join("plugin.toml")).ok()
+                    })
+                })
+                .unwrap_or_default(),
+        };
+        if let Some(workspace) = &spec.workspace {
+            roots.push(format!("{target}: /workspace ({})", workspace.display()));
+        }
+        let instance = if workspace_only || lockfile.mcps.contains_key(target) {
+            spec.load(dashboard_config.settings())
+                .map_err(|e| format!("Cannot load plugin {target}: {e}"))?
+        } else {
+            match kind {
+                ExecutionKind::Wasm => PluginInstance::load_wasm_from_file(target, path, params),
+                ExecutionKind::Native => {
+                    PluginInstance::load_native_from_file(target, path, params)
+                }
+            }
+            .map_err(|e| format!("Cannot load plugin {target}: {e}"))?
+        };
+        dashboard_config.plugins.push(spec);
+        loaded.push(format!(
+            "{target} {version}: loaded ({kind:?}); discovery pending"
+        ));
+        if let Some(manifest) = lockfile
+            .mcps
+            .get(target)
+            .and_then(|entry| entry.manifest.as_ref())
+        {
+            for dependency in manifest.dependencies.binaries.keys() {
+                let directory = metadata_path
+                    .parent()
+                    .unwrap()
+                    .join("_bin")
+                    .join(dependency);
+                let verified = std::fs::read_dir(directory).is_ok_and(|entries| {
+                    entries.flatten().any(|entry| {
+                        entry.path().join(".verified").is_file()
+                            && (entry.path().join(dependency).is_file()
+                                || entry.path().join(format!("{dependency}.exe")).is_file())
+                    })
+                });
+                if !verified {
+                    loaded.push(format!("{target}: dependency {dependency} is not verified locally. Reinstall {target} to provision it; optional dependencies may be unused."));
+                }
+            }
+        }
+        router.register(target.clone(), instance);
+    }
+    let options = server::Options {
+        bind,
+        port,
+        headless,
+        workspace_only,
+        read_only,
+        allowed_tools: allow_tool_for_dashboard,
+        timeout,
+        plugins: loaded,
+        roots,
+    };
+    Ok((router, options, dashboard_config))
 }

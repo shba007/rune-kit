@@ -432,12 +432,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-husky"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b02b629252fe8ef6460461409564e2c21d0c8e77e0944f3d189ff06c4e932ad"
-
-[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3343,45 +3337,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "rune-kit-cli"
-version = "0.8.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "cargo-husky",
- "clap",
- "crossterm",
- "dirs",
- "flate2",
- "futures-util",
- "getrandom 0.4.3",
- "portable-pty",
- "ratatui",
- "reqwest",
- "rune-kit-core",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tar",
- "tempfile",
- "tokio",
- "vt100",
- "xtask",
- "zip",
-]
-
-[[package]]
-name = "rune-kit-core"
+name = "rune-kit"
 version = "0.8.0"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.22.1",
+ "clap",
+ "crossterm",
  "dirs",
  "extism",
  "flate2",
+ "futures-util",
+ "getrandom 0.4.3",
  "jsonschema",
  "landlock",
  "libc",
+ "portable-pty",
+ "ratatui",
  "reqwest",
  "serde",
  "serde_json",
@@ -3391,8 +3364,10 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+ "vt100",
  "wat",
  "windows-sys 0.61.2",
+ "xtask",
  "zip",
 ]
 

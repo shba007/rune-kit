@@ -267,7 +267,7 @@ mod tests {
             Ok(root.path().join("sandbox")),
         );
         assert_eq!(
-            std::fs::read_dir(root.path().join("sandbox/plugins"))
+            std::fs::read_dir(root.path().join("sandbox/mcps"))
                 .unwrap()
                 .count(),
             2

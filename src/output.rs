@@ -167,7 +167,7 @@ pub fn render_list_table(lockfile: &Lockfile) -> Table {
         .column(Column::fixed("BUILDS", 8))
         .column(Column::fixed("DESCRIPTION", 34))
         .column(Column::flexible("SOURCE", 14));
-    for (name, p) in &lockfile.plugins {
+    for (name, p) in &lockfile.mcps {
         let builds = match (
             p.binary_path.ends_with(".wasm"),
             p.native_binary_path.is_some(),

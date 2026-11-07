@@ -449,7 +449,7 @@ impl WasmPluginInstance {
 
         let plugins_dir = crate::paths::managed_root()
             .expect("Cannot initialize Kit storage")
-            .join("plugins");
+            .join("mcps");
 
         let host_ctx = HostContext {
             plugin_name: name.to_string(),

@@ -1,15 +1,10 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_owned()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 pub fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_rune-kit"))

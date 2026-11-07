@@ -7,7 +7,7 @@ fn fixture() -> PathBuf {
             .path()
             .join(format!("native-fixture{}", std::env::consts::EXE_SUFFIX));
         let result = Command::new("rustc")
-            .arg(support::root().join("crates/cli/tests/support/native_fixture.rs"))
+            .arg(support::root().join("tests/support/native_fixture.rs"))
             .arg("-o")
             .arg(target)
             .output()
@@ -278,7 +278,7 @@ fn bare_command_resumes_saved_plugins_and_uses_the_saved_token() {
 
 #[test]
 fn copy_back_cli_requires_the_exact_review_and_restore_approval() {
-    use rune_kit_core::{
+    use rune_kit::{
         file_access::{Broker, Operation, Request},
         sandbox::Sandbox,
     };
@@ -421,7 +421,7 @@ fn workspace_only_mode_serves_wasm_without_mounting_approved_external_paths() {
     fs::write(&wasm, b"\0asm\x01\0\0\0").unwrap();
     let original = root.path().join("original.txt");
     fs::write(&original, b"retained original").unwrap();
-    let mut sandbox = rune_kit_core::sandbox::Sandbox::open(root.path().join("sandbox")).unwrap();
+    let mut sandbox = rune_kit::sandbox::Sandbox::open(root.path().join("sandbox")).unwrap();
     sandbox.approve(wasm.to_str().unwrap(), &original).unwrap();
     let data = env(root.path());
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -460,8 +460,8 @@ fn workspace_only_mode_rejects_native_plugins_without_starting_a_server() {
 
 #[test]
 fn dashboard_configuration_applies_to_live_native_instance_and_preserves_failed_edits() {
-    use rune_kit_cli::configuration::{Configuration, Plugin};
-    use rune_kit_core::{ExecutionKind, McpRouter, PluginManifest};
+    use rune_kit::configuration::{Configuration, Plugin};
+    use rune_kit::{ExecutionKind, McpRouter, PluginManifest};
     use std::sync::{Arc, Mutex};
     let root = support::tempdir();
     let path = root.path().join("dashboard.json");
@@ -1236,7 +1236,7 @@ fn studio_http_fixtures_match_real_gateway_responses() {
     let data: Vec<_> = data.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let gateway = Gateway::start(&support::binary(), &plugin, &["--read-only"], &data).unwrap();
     let fixtures: Value =
-        serde_json::from_str(include_str!("../../../fixtures/mcp-http-2026-07-28.json")).unwrap();
+        serde_json::from_str(include_str!("../fixtures/mcp-http-2026-07-28.json")).unwrap();
     let client = reqwest::blocking::Client::new();
     for example in fixtures["examples"].as_array().unwrap() {
         if example["body"].to_string().contains("{{") {

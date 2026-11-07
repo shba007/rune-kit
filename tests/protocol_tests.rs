@@ -1,5 +1,5 @@
-use rune_kit_core::manifest::{PluginManifest, ToolAnnotations};
-use rune_kit_core::protocol::{McpRouter, namespace_resource_uri, parse_resource_uri};
+use rune_kit::manifest::{PluginManifest, ToolAnnotations};
+use rune_kit::protocol::{McpRouter, namespace_resource_uri, parse_resource_uri};
 
 #[test]
 fn resource_uri_round_trip() {
@@ -20,7 +20,7 @@ fn resource_uri_round_trip_with_nested_path() {
 
 #[test]
 fn rules_resource_routes_absolute_artifact_namespaces_with_slashes() {
-    use rune_kit_core::{PluginInstance, WasmPluginInstance};
+    use rune_kit::{PluginInstance, WasmPluginInstance};
     let mut router = McpRouter::new();
     for namespace in [
         "/tmp/local-plugin",
@@ -347,7 +347,7 @@ fn test_error_shapes() {
 // Exercise the actual tools/list wire path with a portable native MCP fixture.
 #[test]
 fn native_wire_rules_and_timeout() {
-    use rune_kit_core::runtime::{NativeSidecar, PluginInstance};
+    use rune_kit::runtime::{NativeSidecar, PluginInstance};
     use std::collections::HashMap;
     let dir = std::env::temp_dir().join(format!(
         "rune-kf-{}-{}",
@@ -456,7 +456,7 @@ fn native_wire_rules_and_timeout() {
 
 #[test]
 fn wasm_explicit_timeout_interrupts_guest() {
-    use rune_kit_core::runtime::{RuntimeError, WasmPluginInstance};
+    use rune_kit::runtime::{RuntimeError, WasmPluginInstance};
     let bytes = wat::parse_str(
         r#"(module
         (func (export "mcp_call_tool") (result i32)
@@ -529,7 +529,7 @@ fn modern_requests_validate_version_identity_and_legacy_handshake() {
 
 #[test]
 fn dashboard_wasm_discovery_budget_interrupts_guest() {
-    use rune_kit_core::runtime::{PluginInstance, RuntimeError, WasmPluginInstance};
+    use rune_kit::runtime::{PluginInstance, RuntimeError, WasmPluginInstance};
     let bytes = wat::parse_str(r#"(module (func (export "mcp_list_tools") (result i32) (loop $spin (br $spin)) i32.const 0))"#).unwrap();
     let wasm = WasmPluginInstance::load_from_bytes(
         "inventory-timeout",
@@ -553,7 +553,7 @@ fn dashboard_wasm_discovery_budget_interrupts_guest() {
 
 #[test]
 fn cancelling_one_wasm_call_leaves_other_plugin_and_reused_id_usable() {
-    use rune_kit_core::{PluginInstance, WasmPluginInstance};
+    use rune_kit::{PluginInstance, WasmPluginInstance};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},

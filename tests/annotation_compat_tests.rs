@@ -1,6 +1,6 @@
-use rune_kit_core::manifest::{PluginManifest, ToolAnnotations, ToolDefinition};
-use rune_kit_core::protocol::McpRouter;
-use rune_kit_core::runtime::{NativeSidecar, PluginInstance, WasmPluginInstance};
+use rune_kit::manifest::{PluginManifest, ToolAnnotations, ToolDefinition};
+use rune_kit::protocol::McpRouter;
+use rune_kit::runtime::{NativeSidecar, PluginInstance, WasmPluginInstance};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;

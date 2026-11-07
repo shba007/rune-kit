@@ -1,10 +1,10 @@
-use rune_kit_cli::output::{render_list_table, render_update_status_table};
-use rune_kit_core::{ExecutionKind, InstalledPlugin, Lockfile};
+use rune_kit::output::{render_list_table, render_update_status_table};
+use rune_kit::{ExecutionKind, InstalledPlugin, Lockfile};
 use std::collections::HashMap;
 
 fn sample_lockfile() -> Lockfile {
-    let mut plugins = HashMap::new();
-    plugins.insert(
+    let mut mcps = HashMap::new();
+    mcps.insert(
         "alpha".to_string(),
         InstalledPlugin {
             name: "alpha".to_string(),
@@ -19,10 +19,7 @@ fn sample_lockfile() -> Lockfile {
             manifest: None,
         },
     );
-    Lockfile {
-        version: 1,
-        plugins,
-    }
+    Lockfile { version: 1, mcps }
 }
 
 #[test]

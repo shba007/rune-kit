@@ -98,11 +98,14 @@ pub struct BinaryDependencySpec {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Lockfile {
     pub version: u32,
-    pub plugins: HashMap<String, InstalledPlugin>,
+    #[serde(default, alias = "plugins")]
+    pub mcps: HashMap<String, InstalledMcp>,
 }
 
+pub type InstalledPlugin = InstalledMcp;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstalledPlugin {
+pub struct InstalledMcp {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,

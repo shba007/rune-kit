@@ -194,7 +194,7 @@ impl PackageManager {
     pub fn new() -> Self {
         let base_dir = crate::paths::managed_root().expect("Cannot initialize Kit storage");
 
-        let _ = std::fs::create_dir_all(base_dir.join("plugins"));
+        let _ = std::fs::create_dir_all(base_dir.join("mcps"));
         let lockfile_path = base_dir.join("installed.json");
 
         Self {
@@ -224,7 +224,7 @@ impl PackageManager {
     pub fn get_plugin_path(&self, name: &str) -> Option<PathBuf> {
         let lockfile = self.load_lockfile();
         lockfile
-            .plugins
+            .mcps
             .get(name)
             .map(|p| self.base_dir.join(&p.binary_path))
     }
@@ -285,7 +285,7 @@ impl PackageManager {
             registry.into_iter().map(|p| (p.name.clone(), p)).collect();
 
         let mut statuses = Vec::new();
-        for (name, installed) in &lockfile.plugins {
+        for (name, installed) in &lockfile.mcps {
             if let Some(filter) = names
                 && !filter.iter().any(|n| n.eq_ignore_ascii_case(name))
             {
@@ -606,14 +606,14 @@ impl PackageManager {
                 .await?
         };
 
-        let plugins_dir = self.base_dir.join("plugins");
+        let plugins_dir = self.base_dir.join("mcps");
         sanitize_path_component(&bundle.name, "plugin name")?;
-        if new_only && existing.plugins.contains_key(&bundle.name) {
+        if new_only && existing.mcps.contains_key(&bundle.name) {
             return Err(PackageError::InvalidSpec(
                 "Plugin already installed; existing files were preserved".into(),
             ));
         }
-        if absolute_only && !new_only && !existing.plugins.contains_key(&bundle.name) {
+        if absolute_only && !new_only && !existing.mcps.contains_key(&bundle.name) {
             return Err(PackageError::InvalidSpec(
                 "Plugin is no longer installed".into(),
             ));
@@ -717,7 +717,7 @@ impl PackageManager {
             } else {
                 std::fs::write(&dest_wasm, wasm_bytes)?;
             }
-            wasm_rel_path = Some(format!("plugins/{}", file_name));
+            wasm_rel_path = Some(format!("mcps/{}", file_name));
         }
 
         let mut native_rel_path = None;
@@ -755,7 +755,7 @@ impl PackageManager {
                     std::fs::remove_file(&extracted_binary)?;
                     set_executable_permissions(&final_bin_path)?;
                     let _ = std::fs::remove_dir_all(&temp_dir);
-                    return Ok(format!("plugins/{}", bin_file_name));
+                    return Ok(format!("mcps/{}", bin_file_name));
                 }
                 if final_bin_path.exists() {
                     let _ = std::fs::remove_file(&final_bin_path);
@@ -767,7 +767,7 @@ impl PackageManager {
                 set_executable_permissions(&final_bin_path)?;
                 let _ = std::fs::remove_dir_all(&temp_dir);
 
-                Ok(format!("plugins/{}", bin_file_name))
+                Ok(format!("mcps/{}", bin_file_name))
             })();
 
             match extract_res {
@@ -831,7 +831,7 @@ impl PackageManager {
             ));
         }
         let mut lockfile = existing;
-        lockfile.plugins.insert(final_name, installed.clone());
+        lockfile.mcps.insert(final_name, installed.clone());
         self.save_lockfile(&lockfile)?;
 
         Ok(installed)
@@ -840,12 +840,14 @@ impl PackageManager {
     pub fn uninstall(&self, name: &str) -> Result<bool, PackageError> {
         let _lock = PackageLock::acquire(&self.base_dir)?;
         let mut lockfile: Lockfile = read_install_records(&self.lockfile_path)?;
-        if let Some(plugin) = lockfile.plugins.remove(name) {
+        if let Some(plugin) = lockfile.mcps.remove(name) {
             for path in std::iter::once(&plugin.binary_path).chain(plugin.native_binary_path.iter())
             {
                 let path = Path::new(path);
                 let mut components = path.components();
-                if components.next() != Some(std::path::Component::Normal("plugins".as_ref()))
+                let first = components.next();
+                if first != Some(std::path::Component::Normal("mcps".as_ref()))
+                    && first != Some(std::path::Component::Normal("plugins".as_ref()))
                     || components
                         .any(|component| !matches!(component, std::path::Component::Normal(_)))
                 {
@@ -853,8 +855,8 @@ impl PackageManager {
                         "Plugin path is outside managed storage".into(),
                     ));
                 }
-                let base = self.base_dir.join("plugins");
-                if std::fs::symlink_metadata(&base)?.file_type().is_symlink() {
+                let base = self.base_dir.join("mcps");
+                if base.exists() && std::fs::symlink_metadata(&base)?.file_type().is_symlink() {
                     return Err(PackageError::InvalidSpec(
                         "Plugin storage is a symbolic link".into(),
                     ));
