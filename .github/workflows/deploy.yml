@@ -76,7 +76,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: ⚙️ Build Release Binary
-        run: cargo build --locked --release -p rune-kit-cli --target ${{ matrix.target }}
+        run: cargo build --locked --release -p rune-kit --target ${{ matrix.target }}
 
       - name: 📦 Package Binary (Unix)
         if: matrix.archive_ext == 'tar.gz'
