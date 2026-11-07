@@ -221,11 +221,17 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
         "/dev/random",
     ] {
         profile.push_str(&format!(
-            "(allow file-read* (subpath {}))",
+            "(allow file-read* file-map-executable (subpath {}))",
             quoted(std::path::Path::new(system))
         ));
     }
-    profile.push_str(&format!("(allow file-read* (literal {}))(allow process-exec (literal {}))(allow file-read* file-write* (subpath {}))",quoted(&policy.executable),quoted(&policy.executable),quoted(&policy.workspace)));
+    let executable = quoted(&policy.executable);
+    let workspace = quoted(&policy.workspace);
+    // dyld needs executable mappings in addition to ordinary file reads.
+    profile.push_str(&format!(
+        "(allow file-read* file-map-executable process-exec* (literal {executable}))\n\
+         (allow file-read* file-write* (subpath {workspace}))"
+    ));
     let profile = CString::new(profile).map_err(io::Error::other)?;
     let mut error = std::ptr::null_mut();
     // SAFETY: the worker is single-threaded, strings are NUL terminated and the
