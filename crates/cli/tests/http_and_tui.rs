@@ -185,6 +185,95 @@ fn bare_command_resumes_saved_plugins_and_uses_the_saved_token() {
             .status(),
         200
     );
+    let management = endpoint.replace("/mcp", "/management/config");
+    assert_eq!(client.get(&management).send().unwrap().status(), 401);
+    let response = client
+        .get(&management)
+        .bearer_auth("saved-test-token")
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.json::<Value>().unwrap()["fields"].is_array());
+    assert_eq!(
+        client
+            .get(&management)
+            .bearer_auth("saved-test-token")
+            .header("Origin", "https://evil.example")
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
+    let remotes = endpoint.replace("/mcp", "/management/remotes");
+    assert_eq!(client.get(&remotes).send().unwrap().status(), 401);
+    let response = client
+        .get(&remotes)
+        .bearer_auth("saved-test-token")
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.json::<Value>().unwrap()["servers"].is_array());
+    let packages = endpoint.replace("/mcp", "/management/packages");
+    assert_eq!(client.get(&packages).send().unwrap().status(), 401);
+    let response = client
+        .get(&packages)
+        .bearer_auth("saved-test-token")
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.json::<Value>().unwrap()["plugins"].is_array());
+    let source = root.path().join("sample.md");
+    fs::write(&source, "# Sample skill").unwrap();
+    let request = json!({"kind":"skill","target":source,"version":null,"prefer_native":false});
+    let response = client
+        .post(&packages)
+        .bearer_auth("saved-test-token")
+        .json(&request)
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let response = client
+        .post(&packages)
+        .bearer_auth("saved-test-token")
+        .json(&request)
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    let saved_records = fs::read(root.path().join("installed_skills.json")).unwrap();
+    fs::write(root.path().join("installed_skills.json"), "malformed").unwrap();
+    let other = root.path().join("other.md");
+    fs::write(&other, "# Other skill").unwrap();
+    let response = client
+        .post(&packages)
+        .bearer_auth("saved-test-token")
+        .json(&json!({"kind":"skill","target":other,"version":null,"prefer_native":false}))
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    assert_eq!(
+        fs::read(root.path().join("installed_skills.json")).unwrap(),
+        b"malformed"
+    );
+    assert!(!root.path().join("skills/other").exists());
+    fs::write(root.path().join("installed_skills.json"), saved_records).unwrap();
+    let remove_url = format!("{packages}/remove");
+    assert_eq!(
+        client
+            .post(&remove_url)
+            .json(&json!({"kind":"skill","name":"sample"}))
+            .send()
+            .unwrap()
+            .status(),
+        401
+    );
+    let response = client
+        .post(remove_url)
+        .bearer_auth("saved-test-token")
+        .json(&json!({"kind":"skill","name":"sample"}))
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(!root.path().join("skills/sample").exists());
 }
 
 #[test]

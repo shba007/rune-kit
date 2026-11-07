@@ -3387,6 +3387,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.6+spec-1.1.0",

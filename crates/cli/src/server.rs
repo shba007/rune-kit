@@ -5,7 +5,7 @@ use axum::{
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rune_kit_core::McpRouter;
@@ -67,12 +67,318 @@ pub struct Snapshot {
 }
 struct Shared {
     router: Arc<Mutex<McpRouter>>,
+    configuration: Arc<Mutex<crate::configuration::Configuration>>,
     snapshot: Arc<Mutex<Snapshot>>,
     address: SocketAddr,
     sequence: AtomicU64,
     permits: Arc<Semaphore>,
     flags: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationUpdate {
+    plugin: String,
+    key: String,
+    value: String,
+    #[serde(default)]
+    shared: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteUpdate {
+    name: String,
+    config: Option<rune_kit_core::remote::RemoteConfig>,
+}
+
+async fn remote_servers(State(state): State<Arc<Shared>>) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Configuration management requires a loopback listener",
+        )
+            .into_response();
+    }
+    let root = state.snapshot.lock().unwrap().data_root.clone();
+    match crate::remote_panel::Panel::open(root).api_list() {
+        Ok(servers) => axum::Json(json!({"servers": servers})).into_response(),
+        Err(message) => (StatusCode::CONFLICT, message).into_response(),
+    }
+}
+
+fn installed_packages(root: &std::path::Path) -> Result<Value, String> {
+    fn read<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path) -> Result<T, String> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| "Installed package list is malformed".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+            Err(_) => Err("Cannot read installed package list".into()),
+        }
+    }
+    let plugins: rune_kit_core::Lockfile = read(&root.join("installed.json"))?;
+    let skills: rune_kit_core::manifest::SkillLockfile = read(&root.join("installed_skills.json"))?;
+    let mut plugins: Vec<_> = plugins
+        .plugins
+        .values()
+        .map(|p| json!({"name":p.name,"version":p.version,"description":p.description}))
+        .collect();
+    let mut skills: Vec<_> = skills.skills.values().map(|s| json!({"name":s.name,"version":s.version,"description":s.description,"author":s.author})).collect();
+    plugins.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    skills.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Ok(json!({"plugins":plugins,"skills":skills}))
+}
+
+async fn packages(State(state): State<Arc<Shared>>) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Package management requires a loopback listener",
+        )
+            .into_response();
+    }
+    let root = state.snapshot.lock().unwrap().data_root.clone();
+    match installed_packages(&root) {
+        Ok(packages) => axum::Json(packages).into_response(),
+        Err(message) => (StatusCode::CONFLICT, message).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageInstall {
+    kind: String,
+    target: String,
+    version: Option<String>,
+    #[serde(default)]
+    prefer_native: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageOperation {
+    kind: String,
+    name: String,
+}
+
+async fn package_operation(
+    State(state): State<Arc<Shared>>,
+    axum::extract::Path(action): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<PackageOperation>,
+) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Package management requires a loopback listener",
+        )
+            .into_response();
+    }
+    if !matches!(request.kind.as_str(), "plugin" | "skill")
+        || request.name.is_empty()
+        || request.name.len() > 128
+        || request.name.chars().any(char::is_control)
+    {
+        return (StatusCode::BAD_REQUEST, "Invalid package selection").into_response();
+    }
+    let root = state.snapshot.lock().unwrap().data_root.clone();
+    let packages = match installed_packages(&root) {
+        Ok(value) => value,
+        Err(message) => return (StatusCode::CONFLICT, message).into_response(),
+    };
+    let list = if request.kind == "plugin" {
+        &packages["plugins"]
+    } else {
+        &packages["skills"]
+    };
+    if !list
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["name"] == request.name))
+    {
+        return (StatusCode::NOT_FOUND, "Package is not installed").into_response();
+    }
+    if action == "remove" {
+        let result = if request.kind == "plugin" {
+            rune_kit_core::PackageManager::new().uninstall(&request.name)
+        } else {
+            rune_kit_core::SkillManager::new().uninstall_skill(&request.name)
+        };
+        return match result {
+            Ok(true) => {
+                axum::Json(json!({"restart_required":request.kind == "plugin"})).into_response()
+            }
+            Ok(false) => (StatusCode::NOT_FOUND, "Package is not installed").into_response(),
+            Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
+    }
+    if !matches!(action.as_str(), "check" | "update") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let names = vec![request.name.clone()];
+    let statuses = if request.kind == "plugin" {
+        rune_kit_core::PackageManager::new()
+            .check_plugin_updates(Some(&names))
+            .await
+    } else {
+        rune_kit_core::SkillManager::new()
+            .check_skill_updates(Some(&names))
+            .await
+    };
+    let status = match statuses {
+        Ok(mut statuses) if !statuses.is_empty() => statuses.remove(0),
+        Ok(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                "No registry update information for this package",
+            )
+                .into_response();
+        }
+        Err(error) => return (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
+    };
+    if action == "check" || !status.has_update {
+        return axum::Json(json!({"has_update":status.has_update,"installed_version":status.installed_version,"latest_version":status.latest_version})).into_response();
+    }
+    if request.kind == "plugin" {
+        match rune_kit_core::PackageManager::new()
+            .update_installed(&request.name, Some(status.latest_version))
+            .await
+        {
+            Ok(plugin) => axum::Json(
+                json!({"name":plugin.name,"version":plugin.version,"restart_required":true}),
+            )
+            .into_response(),
+            Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        }
+    } else {
+        match rune_kit_core::SkillManager::new().update_skill_with_backup(&request.name, Some(status.latest_version)).await {
+            Ok((skill, backup)) => axum::Json(json!({"name":skill.name,"version":skill.version,"restart_required":false,"backup":backup})).into_response(),
+            Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        }
+    }
+}
+
+async fn install_package(
+    State(state): State<Arc<Shared>>,
+    axum::Json(request): axum::Json<PackageInstall>,
+) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Package management requires a loopback listener",
+        )
+            .into_response();
+    }
+    let target = request.target.trim();
+    if target.is_empty() || target.chars().any(char::is_control) || target.len() > 4096 {
+        return (StatusCode::BAD_REQUEST, "Enter a valid package target").into_response();
+    }
+    if (target.contains('/') || target.contains('\\'))
+        && !target.starts_with("https://")
+        && !std::path::Path::new(target).is_absolute()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Local package paths must be absolute",
+        )
+            .into_response();
+    }
+    let result = match request.kind.as_str() {
+        "plugin" => rune_kit_core::PackageManager::new().install_new(target, request.version, request.prefer_native).await.map(|p| json!({"kind":"plugin","name":p.name,"version":p.version,"restart_required":true})),
+        "skill" => rune_kit_core::SkillManager::new().install_new_skill(target, request.version).await.map(|s| json!({"kind":"skill","name":s.name,"version":s.version,"restart_required":false})),
+        _ => return (StatusCode::BAD_REQUEST, "Choose plugin or skill").into_response(),
+    };
+    match result {
+        Ok(result) => axum::Json(result).into_response(),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+    }
+}
+
+async fn update_remote_server(
+    State(state): State<Arc<Shared>>,
+    axum::Json(update): axum::Json<RemoteUpdate>,
+) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Configuration management requires a loopback listener",
+        )
+            .into_response();
+    }
+    match tokio::task::spawn_blocking(move || {
+        let root = state.snapshot.lock().unwrap().data_root.clone();
+        crate::remote_panel::Panel::open(root).api_update(
+            &state.router,
+            &state.snapshot,
+            update.name,
+            update.config,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(message)) => (StatusCode::CONFLICT, message).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Remote update failed").into_response(),
+    }
+}
+
+async fn configuration_fields(State(state): State<Arc<Shared>>) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Configuration management requires a loopback listener",
+        )
+            .into_response();
+    }
+    let Ok(configuration) = state.configuration.try_lock() else {
+        return (StatusCode::CONFLICT, "Configuration is busy; retry").into_response();
+    };
+    let fields: Vec<_> = configuration
+        .fields()
+        .into_iter()
+        .map(|field| {
+            json!({
+                "plugin": field.plugin, "key": field.key, "kind": field.schema.kind,
+                "description": field.schema.description, "required": field.schema.required,
+                "secret": field.schema.secret, "locked": field.locked, "value": field.value,
+            })
+        })
+        .collect();
+    axum::Json(json!({ "fields": fields })).into_response()
+}
+
+async fn update_configuration(
+    State(state): State<Arc<Shared>>,
+    axum::Json(update): axum::Json<ConfigurationUpdate>,
+) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Configuration management requires a loopback listener",
+        )
+            .into_response();
+    }
+    match tokio::task::spawn_blocking(move || {
+        let mut configuration = state
+            .configuration
+            .try_lock()
+            .map_err(|_| "Configuration is busy; retry".to_string())?;
+        let field = configuration
+            .fields()
+            .into_iter()
+            .find(|field| field.plugin == update.plugin && field.key == update.key)
+            .ok_or_else(|| "Configuration field is unavailable".to_string())?;
+        configuration.apply(&state.router, &field, update.value, update.shared)
+    })
+    .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(message)) => (StatusCode::CONFLICT, message).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Configuration update failed",
+        )
+            .into_response(),
+    }
 }
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
@@ -693,8 +999,10 @@ pub async fn serve(
         tools: Vec::new(),
         discovery_note: "Press d to discover tools in this server".into(),
     }));
+    let configuration = Arc::new(Mutex::new(configuration));
     let state = Arc::new(Shared {
         router: Arc::new(Mutex::new(router)),
+        configuration: configuration.clone(),
         snapshot: snapshot.clone(),
         address,
         sequence: AtomicU64::new(1),
@@ -714,7 +1022,6 @@ pub async fn serve(
     use std::io::IsTerminal;
     let dashboard_stop = stop_tx.clone();
     let dashboard_router = state.router.clone();
-    let configuration = Arc::new(Mutex::new(configuration));
     let _keep_stop_sender = stop_tx;
     let dashboard =
         if !options.headless && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
@@ -729,6 +1036,16 @@ pub async fn serve(
         };
     let app = Router::new()
         .route("/mcp", post(handle))
+        .route(
+            "/management/config",
+            get(configuration_fields).put(update_configuration),
+        )
+        .route(
+            "/management/remotes",
+            get(remote_servers).put(update_remote_server),
+        )
+        .route("/management/packages", get(packages).post(install_package))
+        .route("/management/packages/{action}", post(package_operation))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -760,6 +1077,81 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_inventory_reports_installed_entries_and_rejects_bad_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("installed_skills.json"), json!({"version":1,"skills":{"example":{"name":"example","version":"1.0","author":"author"}}}).to_string()).unwrap();
+        let packages = installed_packages(dir.path()).unwrap();
+        assert!(packages["plugins"].as_array().unwrap().is_empty());
+        assert_eq!(packages["skills"][0]["name"], "example");
+        std::fs::write(dir.path().join("installed.json"), b"invalid").unwrap();
+        assert!(installed_packages(dir.path()).is_err());
+    }
+    #[tokio::test]
+    async fn management_hides_secrets_and_refuses_unknown_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config =
+            crate::configuration::Configuration::read(dir.path().join("config.json")).unwrap();
+        let manifest = serde_json::from_value(json!({"configuration":{"schema_version":1,"fields":{
+            "api_key":{"type":"string","description":"Key","required":false,"secret":true,"default":"private-value"}
+        }}})).unwrap();
+        config.plugins.push(crate::configuration::Plugin {
+            name: "test".into(),
+            path: Default::default(),
+            kind: rune_kit_core::ExecutionKind::Native,
+            manifest,
+            params: Default::default(),
+            workspace: None,
+        });
+        let address: SocketAddr = "127.0.0.1:47601".parse().unwrap();
+        let state = Arc::new(Shared {
+            router: Arc::new(Mutex::new(McpRouter::new())),
+            configuration: Arc::new(Mutex::new(config)),
+            address,
+            snapshot: Arc::new(Mutex::new(Snapshot {
+                bind_address: address.to_string(),
+                workspace_only: false,
+                endpoint: String::new(),
+                status: String::new(),
+                started: Instant::now(),
+                plugins: vec![],
+                read_only: false,
+                allowed_tools: vec![],
+                roots: vec![],
+                timeout: 1,
+                executable: Default::default(),
+                data_root: Default::default(),
+                active: vec![],
+                recent: VecDeque::new(),
+                tools: vec![],
+                discovery_note: String::new(),
+            })),
+            sequence: AtomicU64::new(1),
+            permits: Arc::new(Semaphore::new(1)),
+            flags: Mutex::new(HashMap::new()),
+            token: None,
+        });
+        let response = configuration_fields(State(state.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), BODY_LIMIT)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["fields"][0]["value"], "");
+        assert!(!body.to_string().contains("private-value"));
+        let response = update_configuration(
+            State(state),
+            axum::Json(ConfigurationUpdate {
+                plugin: "test".into(),
+                key: "missing".into(),
+                value: "x".into(),
+                shared: false,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!dir.path().join("config.json").exists());
+    }
     #[test]
     fn encoded_names_and_header_annotations_follow_static_paths() {
         assert_eq!(

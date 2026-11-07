@@ -12,6 +12,66 @@ use std::path::{Path, PathBuf};
 use tar::Archive;
 use thiserror::Error;
 
+struct PackageLock(PathBuf);
+impl PackageLock {
+    fn acquire(root: &Path) -> Result<Self, PackageError> {
+        std::fs::create_dir_all(root)?;
+        let path = root.join("packages.lock");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|_| PackageError::InvalidSpec("Another package operation is active".into()))?;
+        Ok(Self(path))
+    }
+}
+impl Drop for PackageLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn read_install_records<T: serde::de::DeserializeOwned + Default>(
+    path: &Path,
+) -> Result<T, PackageError> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+            PackageError::InvalidSpec(
+                "Installed package records are malformed; existing files were preserved".into(),
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn record_bytes(path: &Path) -> Result<Option<Vec<u8>>, PackageError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save_records(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let stage = path.with_extension(format!("{}.tmp", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&stage)?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&stage, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(stage);
+    }
+    result
+}
+
 #[derive(Error, Debug)]
 pub enum PackageError {
     #[error("IO error: {0}")]
@@ -158,7 +218,7 @@ impl PackageManager {
 
     pub fn save_lockfile(&self, lockfile: &Lockfile) -> Result<(), std::io::Error> {
         let content = serde_json::to_string_pretty(lockfile)?;
-        std::fs::write(&self.lockfile_path, content)
+        save_records(&self.lockfile_path, content.as_bytes())
     }
 
     pub fn get_plugin_path(&self, name: &str) -> Option<PathBuf> {
@@ -400,9 +460,43 @@ impl PackageManager {
         version: Option<String>,
         prefer_native: bool,
     ) -> Result<InstalledPlugin, PackageError> {
+        self.install_internal(target, version, prefer_native, false, false)
+            .await
+    }
+
+    pub async fn install_new(
+        &self,
+        target: &str,
+        version: Option<String>,
+        prefer_native: bool,
+    ) -> Result<InstalledPlugin, PackageError> {
+        self.install_internal(target, version, prefer_native, true, true)
+            .await
+    }
+
+    pub async fn update_installed(
+        &self,
+        target: &str,
+        version: Option<String>,
+    ) -> Result<InstalledPlugin, PackageError> {
+        self.install_internal(target, version, false, false, true)
+            .await
+    }
+
+    async fn install_internal(
+        &self,
+        target: &str,
+        version: Option<String>,
+        prefer_native: bool,
+        new_only: bool,
+        absolute_only: bool,
+    ) -> Result<InstalledPlugin, PackageError> {
+        let _lock = PackageLock::acquire(&self.base_dir)?;
+        let original_records = record_bytes(&self.lockfile_path)?;
+        let existing: Lockfile = read_install_records(&self.lockfile_path)?;
         let target_path = Path::new(target);
 
-        let bundle = if target_path.exists() {
+        let bundle = if (!absolute_only || target_path.is_absolute()) && target_path.exists() {
             if target.ends_with(".wasm") {
                 let stem = target_path
                     .file_stem()
@@ -513,7 +607,43 @@ impl PackageManager {
         };
 
         let plugins_dir = self.base_dir.join("plugins");
+        sanitize_path_component(&bundle.name, "plugin name")?;
+        if new_only && existing.plugins.contains_key(&bundle.name) {
+            return Err(PackageError::InvalidSpec(
+                "Plugin already installed; existing files were preserved".into(),
+            ));
+        }
+        if absolute_only && !new_only && !existing.plugins.contains_key(&bundle.name) {
+            return Err(PackageError::InvalidSpec(
+                "Plugin is no longer installed".into(),
+            ));
+        }
+        if new_only && let Some(bytes) = record_bytes(&self.base_dir.join("remotes.json"))? {
+            let remotes: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
+                PackageError::InvalidSpec(
+                    "Remote server records are malformed; existing files were preserved".into(),
+                )
+            })?;
+            let servers = remotes["servers"].as_object().ok_or_else(|| {
+                PackageError::InvalidSpec(
+                    "Remote server records are malformed; existing files were preserved".into(),
+                )
+            })?;
+            if servers.contains_key(&bundle.name) {
+                return Err(PackageError::InvalidSpec(
+                    "A remote server already uses this plugin name".into(),
+                ));
+            }
+        }
         std::fs::create_dir_all(&plugins_dir)?;
+        if std::fs::symlink_metadata(&plugins_dir)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(PackageError::InvalidSpec(
+                "Plugin storage is a symbolic link; existing files were preserved".into(),
+            ));
+        }
 
         let manifest = if let Some(ref toml_str) = bundle.manifest_toml {
             PluginManifest::from_toml(toml_str).unwrap_or_default()
@@ -541,6 +671,7 @@ impl PackageManager {
                 .unwrap_or_else(|| "0.1.0".to_string()),
             None,
         );
+        sanitize_path_component(&final_ver, "plugin version")?;
 
         let mut wasm_rel_path = None;
         let mut sha256_hash = String::new();
@@ -569,7 +700,23 @@ impl PackageManager {
 
             let file_name = format!("{}-{}.wasm", final_name, final_ver);
             let dest_wasm = plugins_dir.join(&file_name);
-            std::fs::write(&dest_wasm, wasm_bytes)?;
+            if std::fs::symlink_metadata(&dest_wasm)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return Err(PackageError::InvalidSpec(
+                    "Plugin destination is a symbolic link; existing files were preserved".into(),
+                ));
+            }
+            if new_only {
+                use std::io::Write;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dest_wasm)?
+                    .write_all(wasm_bytes)?;
+            } else {
+                std::fs::write(&dest_wasm, wasm_bytes)?;
+            }
             wasm_rel_path = Some(format!("plugins/{}", file_name));
         }
 
@@ -603,6 +750,13 @@ impl PackageManager {
                     .to_string();
 
                 let final_bin_path = plugins_dir.join(&bin_file_name);
+                if new_only {
+                    std::fs::hard_link(&extracted_binary, &final_bin_path)?;
+                    std::fs::remove_file(&extracted_binary)?;
+                    set_executable_permissions(&final_bin_path)?;
+                    let _ = std::fs::remove_dir_all(&temp_dir);
+                    return Ok(format!("plugins/{}", bin_file_name));
+                }
                 if final_bin_path.exists() {
                     let _ = std::fs::remove_file(&final_bin_path);
                 }
@@ -670,7 +824,13 @@ impl PackageManager {
             manifest: Some(manifest),
         };
 
-        let mut lockfile = self.load_lockfile();
+        if record_bytes(&self.lockfile_path)? != original_records {
+            return Err(PackageError::InvalidSpec(
+                "Package records changed during installation; existing records were preserved"
+                    .into(),
+            ));
+        }
+        let mut lockfile = existing;
         lockfile.plugins.insert(final_name, installed.clone());
         self.save_lockfile(&lockfile)?;
 
@@ -678,16 +838,45 @@ impl PackageManager {
     }
 
     pub fn uninstall(&self, name: &str) -> Result<bool, PackageError> {
-        let mut lockfile = self.load_lockfile();
+        let _lock = PackageLock::acquire(&self.base_dir)?;
+        let mut lockfile: Lockfile = read_install_records(&self.lockfile_path)?;
         if let Some(plugin) = lockfile.plugins.remove(name) {
+            for path in std::iter::once(&plugin.binary_path).chain(plugin.native_binary_path.iter())
+            {
+                let path = Path::new(path);
+                let mut components = path.components();
+                if components.next() != Some(std::path::Component::Normal("plugins".as_ref()))
+                    || components
+                        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+                {
+                    return Err(PackageError::InvalidSpec(
+                        "Plugin path is outside managed storage".into(),
+                    ));
+                }
+                let base = self.base_dir.join("plugins");
+                if std::fs::symlink_metadata(&base)?.file_type().is_symlink() {
+                    return Err(PackageError::InvalidSpec(
+                        "Plugin storage is a symbolic link".into(),
+                    ));
+                }
+                let full = self.base_dir.join(path);
+                let parent = full
+                    .parent()
+                    .ok_or_else(|| PackageError::InvalidSpec("Invalid plugin path".into()))?;
+                if !std::fs::canonicalize(parent)?.starts_with(std::fs::canonicalize(base)?) {
+                    return Err(PackageError::InvalidSpec(
+                        "Plugin path is outside managed storage".into(),
+                    ));
+                }
+            }
             let binary = self.base_dir.join(&plugin.binary_path);
             if binary.exists() {
-                let _ = std::fs::remove_file(binary);
+                std::fs::remove_file(binary)?;
             }
             if let Some(ref native_rel) = plugin.native_binary_path {
                 let native_bin = self.base_dir.join(native_rel);
                 if native_bin.exists() {
-                    let _ = std::fs::remove_file(native_bin);
+                    std::fs::remove_file(native_bin)?;
                 }
             }
             self.save_lockfile(&lockfile)?;
@@ -852,7 +1041,7 @@ impl SkillManager {
 
     pub fn save_skills_lockfile(&self, lockfile: &SkillLockfile) -> Result<(), std::io::Error> {
         let content = serde_json::to_string_pretty(lockfile)?;
-        std::fs::write(&self.lockfile_path, content)
+        save_records(&self.lockfile_path, content.as_bytes())
     }
 
     pub async fn fetch_skills(&self) -> Result<Vec<RegistrySkillSummary>, PackageError> {
@@ -931,6 +1120,7 @@ impl SkillManager {
         &self,
         target: &str,
         version: Option<&str>,
+        absolute_only: bool,
     ) -> Result<
         (
             String,
@@ -955,7 +1145,8 @@ impl SkillManager {
                 .replace(".zip", "");
             let bytes = reqwest::get(&url).await?.bytes().await?.to_vec();
             (name, bytes, url, None, None, None)
-        } else if Path::new(target).exists() {
+        } else if (!absolute_only || Path::new(target).is_absolute()) && Path::new(target).exists()
+        {
             let path = Path::new(target);
             let name = path
                 .file_stem()
@@ -1002,16 +1193,79 @@ impl SkillManager {
         target: &str,
         version: Option<String>,
     ) -> Result<InstalledSkill, PackageError> {
+        self.install_skill_internal(target, version, false, false)
+            .await
+            .map(|(skill, _)| skill)
+    }
+
+    pub async fn install_new_skill(
+        &self,
+        target: &str,
+        version: Option<String>,
+    ) -> Result<InstalledSkill, PackageError> {
+        self.install_skill_internal(target, version, true, false)
+            .await
+            .map(|(skill, _)| skill)
+    }
+
+    pub async fn update_skill_with_backup(
+        &self,
+        target: &str,
+        version: Option<String>,
+    ) -> Result<(InstalledSkill, Option<PathBuf>), PackageError> {
+        self.install_skill_internal(target, version, false, true)
+            .await
+    }
+
+    async fn install_skill_internal(
+        &self,
+        target: &str,
+        version: Option<String>,
+        new_only: bool,
+        backup_modified: bool,
+    ) -> Result<(InstalledSkill, Option<PathBuf>), PackageError> {
+        let _lock = PackageLock::acquire(&self.base_dir)?;
+        let original_records = record_bytes(&self.lockfile_path)?;
+        let existing: SkillLockfile = read_install_records(&self.lockfile_path)?;
         let (name, bytes, source, description, author, resolved_version) = self
-            .resolve_skill_artifact(target, version.as_deref())
+            .resolve_skill_artifact(target, version.as_deref(), new_only || backup_modified)
             .await?;
 
         let skills_dir = self.base_dir.join("skills");
         std::fs::create_dir_all(&skills_dir)?;
+        if std::fs::symlink_metadata(&skills_dir)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(PackageError::InvalidSpec(
+                "Skill storage is a symbolic link; existing files were preserved".into(),
+            ));
+        }
 
         let dest = skills_dir.join(&name);
+        sanitize_path_component(&name, "skill name")?;
+        if backup_modified && !existing.skills.contains_key(&name) {
+            return Err(PackageError::InvalidSpec(
+                "Skill is no longer installed".into(),
+            ));
+        }
+        if new_only && (existing.skills.contains_key(&name) || dest.exists()) {
+            return Err(PackageError::InvalidSpec(
+                "Skill already exists; existing files were preserved".into(),
+            ));
+        }
+        let backup = if backup_modified && dest.exists() {
+            let installed = existing.skills.get(&name).ok_or_else(|| {
+                PackageError::InvalidSpec(
+                    "Skill directory is not registered; existing files were preserved".into(),
+                )
+            })?;
+            backup_modified_skill(&dest, installed)?
+        } else {
+            None
+        };
         if dest.exists() {
-            let _ = std::fs::remove_dir_all(&dest);
+            std::fs::remove_dir_all(&dest)?;
         }
         std::fs::create_dir_all(&dest)?;
 
@@ -1031,18 +1285,36 @@ impl SkillManager {
             files,
         };
 
-        let mut lockfile = self.load_skills_lockfile();
+        if record_bytes(&self.lockfile_path)? != original_records {
+            return Err(PackageError::InvalidSpec(
+                "Package records changed during installation; existing records were preserved"
+                    .into(),
+            ));
+        }
+        let mut lockfile = existing;
         lockfile.skills.insert(name.clone(), installed.clone());
         self.save_skills_lockfile(&lockfile)?;
 
-        Ok(installed)
+        Ok((installed, backup))
     }
 
     pub fn uninstall_skill(&self, name: &str) -> Result<bool, PackageError> {
-        let mut lockfile = self.load_skills_lockfile();
+        let _lock = PackageLock::acquire(&self.base_dir)?;
+        let mut lockfile: SkillLockfile = read_install_records(&self.lockfile_path)?;
         if let Some(skill) = lockfile.skills.remove(name) {
+            sanitize_path_component(&skill.name, "skill name")?;
+            if std::fs::symlink_metadata(self.base_dir.join("skills"))?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(PackageError::InvalidSpec(
+                    "Skill storage is a symbolic link".into(),
+                ));
+            }
             let dir = self.base_dir.join("skills").join(&skill.name);
-            let _ = std::fs::remove_dir_all(&dir);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)?;
+            }
             self.save_skills_lockfile(&lockfile)?;
             Ok(true)
         } else {
@@ -1139,6 +1411,76 @@ fn walk_skill_files(root: &Path, _skill_name: &str) -> Result<Vec<SkillFile>, Pa
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
+}
+
+fn backup_modified_skill(
+    root: &Path,
+    installed: &InstalledSkill,
+) -> Result<Option<PathBuf>, PackageError> {
+    fn copy_tree(source: &Path, target: &Path) -> Result<(), PackageError> {
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let destination = target.join(entry.file_name());
+            if kind.is_symlink() {
+                return Err(PackageError::InvalidSpec(
+                    "Cannot back up a skill containing symbolic links".into(),
+                ));
+            }
+            if kind.is_dir() {
+                std::fs::create_dir(&destination)?;
+                copy_tree(&entry.path(), &destination)?;
+            } else if kind.is_file() {
+                std::fs::copy(entry.path(), destination)?;
+            } else {
+                return Err(PackageError::InvalidSpec(
+                    "Cannot back up a skill containing special files".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    // Refuse symbolic links before walking, so neither inspection nor backup follows them.
+    fn check_tree(dir: &Path) -> Result<(), PackageError> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_symlink() || (!kind.is_dir() && !kind.is_file()) {
+                return Err(PackageError::InvalidSpec(
+                    "Cannot update a skill containing links or special files".into(),
+                ));
+            }
+            if kind.is_dir() {
+                check_tree(&entry.path())?;
+            }
+        }
+        Ok(())
+    }
+    if std::fs::symlink_metadata(root)?.file_type().is_symlink() {
+        return Err(PackageError::InvalidSpec(
+            "Cannot update a linked skill directory".into(),
+        ));
+    }
+    check_tree(root)?;
+    let current = walk_skill_files(root, &installed.name)?;
+    let unchanged = current.len() == installed.files.len()
+        && current.iter().all(|file| {
+            installed.files.iter().any(|original| {
+                original.path == file.path
+                    && original.sha256.is_some()
+                    && original.sha256 == file.sha256
+            })
+        });
+    if unchanged {
+        return Ok(None);
+    }
+    let parent = root
+        .parent()
+        .ok_or_else(|| PackageError::InvalidSpec("Invalid skill directory".into()))?;
+    let backup = parent.join(format!("{}.backup-{}", installed.name, chrono_timestamp()));
+    std::fs::create_dir(&backup)?;
+    copy_tree(root, &backup)?;
+    Ok(Some(backup))
 }
 
 fn collect_skill_files(
@@ -1532,6 +1874,42 @@ fn chrono_timestamp() -> u64 {
 mod cli_archive_tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn skill_update_backs_up_modified_files_beside_the_skill() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("kit");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = temp.path().join("example.md");
+        std::fs::write(&source, b"original").unwrap();
+        let manager = SkillManager {
+            base_dir: root.clone(),
+            lockfile_path: root.join("installed_skills.json"),
+        };
+        manager
+            .install_new_skill(source.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        let dir = root.join("skills/example");
+        let mut files = walk_skill_files(&dir, "example").unwrap();
+        assert_eq!(files.len(), 1);
+        let installed_file = dir.join(files.remove(0).path);
+        std::fs::write(&installed_file, b"user edit").unwrap();
+        std::fs::write(&source, b"updated").unwrap();
+        let (_, backup) = manager
+            .update_skill_with_backup(source.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        let backup = backup.unwrap();
+        assert_eq!(backup.parent(), dir.parent());
+        assert_eq!(
+            std::fs::read(backup.join(installed_file.file_name().unwrap())).unwrap(),
+            b"user edit"
+        );
+        assert_eq!(std::fs::read(installed_file).unwrap(), b"updated");
+        assert!(manager.uninstall_skill("example").unwrap());
+        assert!(backup.exists());
+    }
 
     #[tokio::test]
     async fn registry_download_checks_http_status_and_integrity_before_returning_payload() {

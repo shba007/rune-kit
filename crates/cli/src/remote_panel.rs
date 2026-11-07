@@ -29,6 +29,49 @@ pub struct Panel {
 }
 
 impl Panel {
+    pub(crate) fn api_list(&self) -> Result<Vec<serde_json::Value>, String> {
+        if !self.writable {
+            return Err(self.message.clone());
+        }
+        Ok(self
+            .servers
+            .iter()
+            .map(|(name, config)| {
+                serde_json::json!({
+                    "name": name, "endpoint": config.redacted_endpoint(),
+                    "protocol": config.protocol, "token_env": config.token_env,
+                })
+            })
+            .collect())
+    }
+    pub(crate) fn api_update(
+        &mut self,
+        router: &Arc<Mutex<McpRouter>>,
+        state: &Arc<Mutex<crate::server::Snapshot>>,
+        name: String,
+        config: Option<RemoteConfig>,
+    ) -> Result<(), String> {
+        if !self.writable {
+            return Err(self.message.clone());
+        }
+        if let Some(config) = config {
+            self.editing = self.servers.contains_key(&name);
+            self.draft = Some([
+                name,
+                config.endpoint,
+                config.protocol,
+                config.token_env.unwrap_or_default(),
+            ]);
+            self.apply(router, state, false)
+        } else {
+            self.selected = self
+                .servers
+                .keys()
+                .position(|key| key == &name)
+                .ok_or("Remote server does not exist")?;
+            self.apply(router, state, true)
+        }
+    }
     pub fn open(root: PathBuf) -> Self {
         let loaded = crate::remotes::bytes(&root).and_then(|bytes| {
             crate::remotes::read(&root.join("remotes.json"))
@@ -346,6 +389,36 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+    #[test]
+    fn management_api_updates_live_servers_and_redacts_query_values() {
+        let root = tempfile::tempdir().unwrap();
+        let router = Arc::new(Mutex::new(McpRouter::new()));
+        let state = state(root.path());
+        let mut panel = Panel::open(root.path().into());
+        panel
+            .api_update(
+                &router,
+                &state,
+                "external".into(),
+                Some(RemoteConfig {
+                    endpoint: "http://127.0.0.1:1/mcp?key=private-secret".into(),
+                    protocol: "2026-07-28".into(),
+                    token_env: None,
+                }),
+            )
+            .unwrap();
+        assert!(router.lock().unwrap().is_remote("external"));
+        assert!(
+            !serde_json::to_string(&panel.api_list().unwrap())
+                .unwrap()
+                .contains("private-secret")
+        );
+        panel
+            .api_update(&router, &state, "external".into(), None)
+            .unwrap();
+        assert!(!router.lock().unwrap().contains_namespace("external"));
+        assert!(panel.api_list().unwrap().is_empty());
     }
     #[test]
     fn add_edit_remove_apply_immediately_and_require_visible_confirmation() {
