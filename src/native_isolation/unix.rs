@@ -208,7 +208,7 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
         )
     }
     let mut profile = String::from(
-        "(version 1)(deny default)(allow process-fork)(allow signal (target self))(allow sysctl-read)",
+        "(version 1)(deny default)(allow process-fork)(allow signal (target self))(allow sysctl-read)(allow file-read-metadata)",
     );
     for system in [
         "/System/Library",
