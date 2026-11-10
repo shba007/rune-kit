@@ -1,11 +1,21 @@
 {
   "formatted_published_notes": false,
-  "base_tag": "v0.7.0",
-  "version": "0.8.0",
+  "base_tag": "v0.8.0",
+  "version": "0.9.0",
   "commits": [
-    "b45ea6a7c8a62b19a15a673bcb922989f1b77fe6"
+    "0163f962f190eefaa55d89b5c78d4f98a06f6af5",
+    "09e2c6bf4253348ae9872060e0d40bc600a2b50f",
+    "0d7d3c4eaab31f5b07bd27412261ebc77f7727a6",
+    "465731a7a9d8c0d32ccf8ab4ee2d0aa6f8aa22d1",
+    "872048b5dce6dd34f42028fb29e2e8bc5ee026cf",
+    "952aacc6f42ab05bf0bbca70cc5d41113bd05810",
+    "a03c7cabcce51c5a1005fa55ec84200edea60cc7",
+    "a87839897a8815ad2ddfc31d5fb5f45407eec37e",
+    "a9cf49d509a24eec86af9a33b3c3a326d5432d81",
+    "cf43c5f131c692ea91fc88399588924e1833af67",
+    "defe0beb11681d720092fc46f82b58feb6a11231"
   ],
-  "notes_sha256": "e9ad5cde32a510d336151dc992ef121eb1a644a4f0a3f059b28be332a94e8116",
-  "source_head": "b45ea6a7c8a62b19a15a673bcb922989f1b77fe6",
+  "notes_sha256": "309301b55210f451f108c629c59be483788c9fcc2bb950284c23885ffc933176",
+  "source_head": "a03c7cabcce51c5a1005fa55ec84200edea60cc7",
   "generator": "cocogitto@7.0.0"
 }
