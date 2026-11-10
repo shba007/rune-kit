@@ -3,6 +3,25 @@ All notable changes to this project will be documented in this file. See [conven
 
 - - -
 
+## [v0.9.0](https://github.com/shba007/rune-kit/compare/v0.8.0..v0.9.0) - 2026-11-10
+
+#### 🚀 Features
+- update security profile to import system sandbox in macOS policy - ([a03c7ca](https://github.com/shba007/rune-kit/commit/a03c7cabcce51c5a1005fa55ec84200edea60cc7)) - Shirsendu Bairagi
+- enhance security policy by allowing file read metadata - ([a9cf49d](https://github.com/shba007/rune-kit/commit/a9cf49d509a24eec86af9a33b3c3a326d5432d81)) - Shirsendu Bairagi
+- add icon management endpoints and implement package icon fetching - ([465731a](https://github.com/shba007/rune-kit/commit/465731a7a9d8c0d32ccf8ab4ee2d0aa6f8aa22d1)) - Shirsendu Bairagi
+- add comprehensive tests for remote HTTP interactions and security measures - ([cf43c5f](https://github.com/shba007/rune-kit/commit/cf43c5f131c692ea91fc88399588924e1833af67)) - Shirsendu Bairagi
+- add management API for remote servers and configuration updates - ([defe0be](https://github.com/shba007/rune-kit/commit/defe0beb11681d720092fc46f82b58feb6a11231)) - Shirsendu Bairagi
+- Update dependencies and improve temporary directory handling in tests - ([0163f96](https://github.com/shba007/rune-kit/commit/0163f962f190eefaa55d89b5c78d4f98a06f6af5)) - Shirsendu Bairagi
+- Implement cooperative file access API and enhance remote HTTP handling - ([a878398](https://github.com/shba007/rune-kit/commit/a87839897a8815ad2ddfc31d5fb5f45407eec37e)) - Shirsendu Bairagi
+- add workspace-only mode for WASM execution - ([09e2c6b](https://github.com/shba007/rune-kit/commit/09e2c6bf4253348ae9872060e0d40bc600a2b50f)) - Shirsendu Bairagi
+- implement configuration editor and dashboard integration - ([952aacc](https://github.com/shba007/rune-kit/commit/952aacc6f42ab05bf0bbca70cc5d41113bd05810)) - Shirsendu Bairagi
+
+#### 🐛 Bug Fixes
+- improve error handling in native isolation worker and enhance file access permissions - ([872048b](https://github.com/shba007/rune-kit/commit/872048b5dce6dd34f42028fb29e2e8bc5ee026cf)) - Shirsendu Bairagi
+- (**ci**) update crate target to rune-kit and fix isolation fixture path - ([0d7d3c4](https://github.com/shba007/rune-kit/commit/0d7d3c4eaab31f5b07bd27412261ebc77f7727a6)) - Shirsendu Bairagi
+
+- - -
+
 ## [v0.8.0](https://github.com/shba007/rune-kit/compare/v0.7.0..v0.8.0) - 2026-10-24
 
 #### 🚀 Features
