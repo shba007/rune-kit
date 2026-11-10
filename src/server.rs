@@ -2,7 +2,7 @@
 use axum::{
     Router,
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -128,6 +128,28 @@ fn installed_packages(root: &std::path::Path) -> Result<Value, String> {
     mcps.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     skills.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Ok(json!({"mcps":mcps,"skills":skills,"plugins":mcps}))
+}
+
+async fn package_icon(Path(name): Path<String>) -> Response {
+    match crate::icons::package_icon(&name).await {
+        Ok(Some(icon)) => (
+            [
+                (header::CONTENT_TYPE, "image/svg+xml"),
+                (header::CACHE_CONTROL, "private, max-age=3600"),
+            ],
+            icon.as_ref().clone(),
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::BAD_GATEWAY.into_response(),
+    }
+}
+
+async fn registry_list() -> Response {
+    match crate::icons::registry().await {
+        Ok(list) => axum::Json(list).into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Cannot load the tools registry").into_response(),
+    }
 }
 
 async fn packages(State(state): State<Arc<Shared>>) -> Response {
@@ -1059,6 +1081,8 @@ pub async fn start_embedded(
         )
         .route("/management/packages", get(packages).post(install_package))
         .route("/management/packages/{action}", post(package_operation))
+        .route("/management/icons/{name}", get(package_icon))
+        .route("/management/registry", get(registry_list))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1191,6 +1215,8 @@ pub async fn serve(
         )
         .route("/management/packages", get(packages).post(install_package))
         .route("/management/packages/{action}", post(package_operation))
+        .route("/management/icons/{name}", get(package_icon))
+        .route("/management/registry", get(registry_list))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

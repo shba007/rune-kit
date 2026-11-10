@@ -155,6 +155,7 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 
 pub mod file_access;
 pub mod headers;
+pub mod icons;
 pub mod manifest;
 pub mod native_isolation;
 pub mod package;
