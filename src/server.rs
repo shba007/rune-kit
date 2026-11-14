@@ -184,6 +184,18 @@ struct PackageOperation {
     name: String,
 }
 
+fn is_mcp_kind(kind: &str) -> bool {
+    matches!(kind, "mcp" | "plugin")
+}
+
+async fn dispatch_package_update<M, S>(is_mcp: bool, mcp: M, skill: S) -> Response
+where
+    M: std::future::Future<Output = Response>,
+    S: std::future::Future<Output = Response>,
+{
+    if is_mcp { mcp.await } else { skill.await }
+}
+
 async fn package_operation(
     State(state): State<Arc<Shared>>,
     axum::extract::Path(action): axum::extract::Path<String>,
@@ -196,7 +208,7 @@ async fn package_operation(
         )
             .into_response();
     }
-    let is_mcp = matches!(request.kind.as_str(), "mcp" | "plugin");
+    let is_mcp = is_mcp_kind(&request.kind);
     if (!is_mcp && request.kind != "skill")
         || request.name.is_empty()
         || request.name.len() > 128
@@ -262,9 +274,9 @@ async fn package_operation(
     if action == "check" || !status.has_update {
         return axum::Json(json!({"has_update":status.has_update,"installed_version":status.installed_version,"latest_version":status.latest_version})).into_response();
     }
-    if request.kind == "plugin" {
+    dispatch_package_update(is_mcp, async {
         match rune_kit_core::PackageManager::new()
-            .update_installed(&request.name, Some(status.latest_version))
+            .update_installed(&request.name, Some(status.latest_version.clone()))
             .await
         {
             Ok(plugin) => axum::Json(
@@ -273,12 +285,12 @@ async fn package_operation(
             .into_response(),
             Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
         }
-    } else {
-        match rune_kit_core::SkillManager::new().update_skill_with_backup(&request.name, Some(status.latest_version)).await {
+    }, async {
+        match rune_kit_core::SkillManager::new().update_skill_with_backup(&request.name, Some(status.latest_version.clone())).await {
             Ok((skill, backup)) => axum::Json(json!({"name":skill.name,"version":skill.version,"restart_required":false,"backup":backup})).into_response(),
             Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
         }
-    }
+    }).await
 }
 
 async fn install_package(
@@ -1248,6 +1260,26 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn package_updates_dispatch_mcp_and_plugin_to_mcp_updater() {
+        for (kind, expected) in [
+            ("mcp", StatusCode::ACCEPTED),
+            ("plugin", StatusCode::ACCEPTED),
+            ("skill", StatusCode::IM_A_TEAPOT),
+        ] {
+            let response = dispatch_package_update(
+                is_mcp_kind(kind),
+                async { StatusCode::ACCEPTED.into_response() },
+                async { StatusCode::IM_A_TEAPOT.into_response() },
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                expected,
+                "wrong update handler for {kind}"
+            );
+        }
+    }
     #[test]
     fn package_inventory_reports_installed_entries_and_rejects_bad_files() {
         let dir = tempfile::tempdir().unwrap();
