@@ -157,6 +157,12 @@ pub struct RecoveryInfo {
     pub backup_path: PathBuf,
     pub completed: Option<u64>,
 }
+
+#[derive(Serialize)]
+pub struct ChangesView {
+    pub reviews: Vec<Review>,
+    pub recoveries: Vec<RecoveryInfo>,
+}
 impl RecoveryInfo {
     pub fn approval_token(&self) -> io::Result<String> {
         Ok(hash(&serde_json::to_vec(self).map_err(io::Error::other)?))
@@ -182,6 +188,80 @@ impl Drop for Lock {
 }
 
 impl Broker {
+    /// Apply only the exact inventory item whose approval token was reviewed by the caller.
+    pub fn apply_approved(
+        root: PathBuf,
+        plugin: &str,
+        action: &str,
+        approval: &str,
+    ) -> io::Result<()> {
+        let inventory = Self::inspect(root.clone(), plugin)?;
+        match action {
+            "apply" => {
+                for review in inventory.reviews {
+                    if review.approval_token()? == approval {
+                        return Self::open(root, plugin)?.apply_review(&review);
+                    }
+                }
+            }
+            "restore" => {
+                for recovery in inventory.recoveries {
+                    if recovery.approval_token()? == approval {
+                        return Self::open(root, plugin)?.restore(&recovery);
+                    }
+                }
+            }
+            _ => return Err(error("Unknown review action")),
+        }
+        Err(error("The reviewed item changed or no longer exists"))
+    }
+
+    /// Read one existing transaction inventory without creating its directories or pruning backups.
+    pub fn inspect(root: PathBuf, plugin: &str) -> io::Result<ChangesView> {
+        Sandbox::inspect(root.clone(), &[plugin.to_owned()])?;
+        if !root.try_exists()? {
+            return Ok(ChangesView {
+                reviews: vec![],
+                recoveries: vec![],
+            });
+        }
+        let root = fs::canonicalize(root)?;
+        let private = root.join("transactions").join(hash(plugin.as_bytes()));
+        check_links(&private)?;
+        match fs::metadata(&private) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(error("Transaction storage is not a directory")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(ChangesView {
+                    reviews: vec![],
+                    recoveries: vec![],
+                });
+            }
+            Err(e) => return Err(e),
+        }
+        let broker = Self {
+            root,
+            plugin: plugin.to_owned(),
+            private,
+        };
+        let _lock = broker.lock()?;
+        let reviews = broker.reviews_unlocked()?;
+        let recoveries = broker
+            .recoveries_unlocked()?
+            .into_iter()
+            .map(|(receipt, r)| RecoveryInfo {
+                path: r.change.path,
+                id: r.change.id,
+                backup_path: receipt.with_extension("backup"),
+                completed: r.completed,
+            })
+            .collect();
+        Ok(ChangesView {
+            reviews,
+            recoveries,
+        })
+    }
+
     pub fn open(root: PathBuf, plugin: &str) -> io::Result<Self> {
         let sandbox = Sandbox::open(root)?;
         let private = sandbox
@@ -668,6 +748,67 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn inspection_lists_changes_and_recoveries_without_creating_or_pruning() {
+        let f = Fixture::new(false);
+        let missing = f.root.join("not-created");
+        let empty = Broker::inspect(missing.clone(), "fixture").unwrap();
+        assert!(empty.reviews.is_empty() && empty.recoveries.is_empty());
+        assert!(!missing.exists());
+        f.write(b"changed");
+        let lock = f.broker.lock().unwrap();
+        assert!(Broker::inspect(f.broker.root.clone(), "fixture").is_err());
+        drop(lock);
+        let changes = Broker::inspect(f.broker.root.clone(), "fixture").unwrap();
+        assert_eq!(changes.reviews.len(), 1);
+        assert!(changes.recoveries.is_empty());
+        assert_eq!(fs::read(&f.file).unwrap(), b"original");
+        assert_eq!(
+            fs::read(&changes.reviews[0].staged_path).unwrap(),
+            b"changed"
+        );
+        f.broker.apply_review(&changes.reviews[0]).unwrap();
+        let after = Broker::inspect(f.broker.root.clone(), "fixture").unwrap();
+        assert!(after.reviews.is_empty());
+        assert_eq!(after.recoveries.len(), 1);
+        assert!(after.recoveries[0].backup_path.exists());
+        assert_eq!(fs::read(&f.file).unwrap(), b"changed");
+    }
+
+    #[test]
+    fn approved_actions_reject_stale_reviews_and_newer_external_edits() {
+        let f = Fixture::new(false);
+        f.write(b"first");
+        let stale = Broker::inspect(f.broker.root.clone(), "fixture")
+            .unwrap()
+            .reviews[0]
+            .approval_token()
+            .unwrap();
+        f.write(b"second");
+        assert!(Broker::apply_approved(f.broker.root.clone(), "fixture", "apply", &stale).is_err());
+        assert_eq!(fs::read(&f.file).unwrap(), b"original");
+        let current = Broker::inspect(f.broker.root.clone(), "fixture")
+            .unwrap()
+            .reviews[0]
+            .approval_token()
+            .unwrap();
+        Broker::apply_approved(f.broker.root.clone(), "fixture", "apply", &current).unwrap();
+        assert_eq!(fs::read(&f.file).unwrap(), b"second");
+        let recovery = Broker::inspect(f.broker.root.clone(), "fixture")
+            .unwrap()
+            .recoveries[0]
+            .approval_token()
+            .unwrap();
+        fs::write(&f.file, b"external edit").unwrap();
+        assert!(
+            Broker::apply_approved(f.broker.root.clone(), "fixture", "restore", &recovery).is_err()
+        );
+        assert_eq!(fs::read(&f.file).unwrap(), b"external edit");
+        fs::write(&f.file, b"second").unwrap();
+        Broker::apply_approved(f.broker.root.clone(), "fixture", "restore", &recovery).unwrap();
+        assert_eq!(fs::read(&f.file).unwrap(), b"original");
     }
 
     #[test]

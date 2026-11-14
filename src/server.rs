@@ -93,6 +93,14 @@ struct RemoteUpdate {
     config: Option<rune_kit_core::remote::RemoteConfig>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangeAction {
+    plugin: String,
+    action: String,
+    approval: String,
+}
+
 async fn sandbox_inventory(State(state): State<Arc<Shared>>) -> Response {
     if !state.address.ip().is_loopback() {
         return (
@@ -125,6 +133,118 @@ async fn sandbox_inventory(State(state): State<Arc<Shared>>) -> Response {
             "Cannot read Kit sandbox inventory",
         )
             .into_response(),
+    }
+}
+
+async fn staged_changes(State(state): State<Arc<Shared>>) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Change review requires a loopback listener",
+        )
+            .into_response();
+    }
+    let plugins = match state.configuration.try_lock() {
+        Ok(config) => config
+            .plugins
+            .iter()
+            .map(|plugin| plugin.name.clone())
+            .collect::<Vec<_>>(),
+        Err(_) => return (StatusCode::CONFLICT, "Configuration is busy; retry").into_response(),
+    };
+    match tokio::task::spawn_blocking(move || -> std::io::Result<Vec<Value>> {
+        let root = rune_kit_core::paths::sandbox_root()?;
+        plugins
+            .into_iter()
+            .map(|plugin| {
+                let changes = rune_kit_core::file_access::Broker::inspect(root.clone(), &plugin)?;
+                let reviews = changes
+                    .reviews
+                    .into_iter()
+                    .map(|review| -> std::io::Result<Value> {
+                        let approval = review.approval_token()?;
+                        let mut item =
+                            serde_json::to_value(review).map_err(std::io::Error::other)?;
+                        item["approval"] = json!(approval);
+                        Ok(item)
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                let recoveries = changes
+                    .recoveries
+                    .into_iter()
+                    .map(|recovery| -> std::io::Result<Value> {
+                        let approval = recovery.approval_token()?;
+                        let mut item =
+                            serde_json::to_value(recovery).map_err(std::io::Error::other)?;
+                        item["approval"] = json!(approval);
+                        Ok(item)
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                Ok(json!({"plugin":plugin,"reviews":reviews,"recoveries":recoveries}))
+            })
+            .collect()
+    })
+    .await
+    {
+        Ok(Ok(plugins)) => axum::Json(json!({"plugins":plugins})).into_response(),
+        Ok(Err(_)) => (
+            StatusCode::CONFLICT,
+            "Cannot read staged changes or recovery backups",
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Cannot read staged changes or recovery backups",
+        )
+            .into_response(),
+    }
+}
+
+async fn apply_staged_change(
+    State(state): State<Arc<Shared>>,
+    axum::Json(request): axum::Json<ChangeAction>,
+) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Change review requires a loopback listener",
+        )
+            .into_response();
+    }
+    if !matches!(request.action.as_str(), "apply" | "restore")
+        || request.approval.len() != 64
+        || !request.approval.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return (StatusCode::BAD_REQUEST, "Invalid change review action").into_response();
+    }
+    let allowed = match state.configuration.try_lock() {
+        Ok(config) => config
+            .plugins
+            .iter()
+            .any(|plugin| plugin.name == request.plugin),
+        Err(_) => return (StatusCode::CONFLICT, "Configuration is busy; retry").into_response(),
+    };
+    if !allowed {
+        return (StatusCode::NOT_FOUND, "MCP is not loaded by Kit").into_response();
+    }
+    match tokio::task::spawn_blocking(move || {
+        let root = rune_kit_core::paths::sandbox_root()?;
+        rune_kit_core::file_access::Broker::apply_approved(
+            root,
+            &request.plugin,
+            &request.action,
+            &request.approval,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(_)) => (
+            StatusCode::CONFLICT,
+            "Review changed or the file cannot be safely updated; reload and review again",
+        )
+            .into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Change action failed").into_response(),
     }
 }
 
@@ -1131,6 +1251,10 @@ pub async fn start_embedded(
         .route("/management/icons/{name}", get(package_icon))
         .route("/management/registry", get(registry_list))
         .route("/management/sandbox", get(sandbox_inventory))
+        .route(
+            "/management/changes",
+            get(staged_changes).post(apply_staged_change),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1266,6 +1390,10 @@ pub async fn serve(
         .route("/management/icons/{name}", get(package_icon))
         .route("/management/registry", get(registry_list))
         .route("/management/sandbox", get(sandbox_inventory))
+        .route(
+            "/management/changes",
+            get(staged_changes).post(apply_staged_change),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1391,9 +1519,46 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(!dir.path().join("config.json").exists());
+        let invalid = ChangeAction {
+            plugin: "test".into(),
+            action: "apply".into(),
+            approval: "bad".into(),
+        };
+        assert_eq!(
+            apply_staged_change(State(state.clone()), axum::Json(invalid))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let missing = ChangeAction {
+            plugin: "missing".into(),
+            action: "apply".into(),
+            approval: "a".repeat(64),
+        };
+        assert_eq!(
+            apply_staged_change(State(state.clone()), axum::Json(missing))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
         Arc::get_mut(&mut state).unwrap().address = "0.0.0.0:47601".parse().unwrap();
         assert_eq!(
-            sandbox_inventory(State(state)).await.status(),
+            sandbox_inventory(State(state.clone())).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            staged_changes(State(state.clone())).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        let remote = ChangeAction {
+            plugin: "test".into(),
+            action: "apply".into(),
+            approval: "a".repeat(64),
+        };
+        assert_eq!(
+            apply_staged_change(State(state), axum::Json(remote))
+                .await
+                .status(),
             StatusCode::FORBIDDEN
         );
     }
