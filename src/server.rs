@@ -93,6 +93,41 @@ struct RemoteUpdate {
     config: Option<rune_kit_core::remote::RemoteConfig>,
 }
 
+async fn sandbox_inventory(State(state): State<Arc<Shared>>) -> Response {
+    if !state.address.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            "Sandbox management requires a loopback listener",
+        )
+            .into_response();
+    }
+    let plugins = match state.configuration.try_lock() {
+        Ok(config) => config
+            .plugins
+            .iter()
+            .map(|plugin| plugin.name.clone())
+            .collect::<Vec<_>>(),
+        Err(_) => return (StatusCode::CONFLICT, "Configuration is busy; retry").into_response(),
+    };
+    let workspace_only = state.snapshot.lock().unwrap().workspace_only;
+    match tokio::task::spawn_blocking(move || {
+        let root = rune_kit_core::paths::sandbox_root()?;
+        rune_kit_core::sandbox::Sandbox::inspect(root, &plugins)
+    })
+    .await
+    {
+        Ok(Ok(plugins)) => {
+            axum::Json(json!({"workspace_only":workspace_only,"plugins":plugins})).into_response()
+        }
+        Ok(Err(_)) => (StatusCode::CONFLICT, "Cannot read Kit sandbox inventory").into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Cannot read Kit sandbox inventory",
+        )
+            .into_response(),
+    }
+}
+
 async fn remote_servers(State(state): State<Arc<Shared>>) -> Response {
     if !state.address.ip().is_loopback() {
         return (
@@ -1095,6 +1130,7 @@ pub async fn start_embedded(
         .route("/management/packages/{action}", post(package_operation))
         .route("/management/icons/{name}", get(package_icon))
         .route("/management/registry", get(registry_list))
+        .route("/management/sandbox", get(sandbox_inventory))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1229,6 +1265,7 @@ pub async fn serve(
         .route("/management/packages/{action}", post(package_operation))
         .route("/management/icons/{name}", get(package_icon))
         .route("/management/registry", get(registry_list))
+        .route("/management/sandbox", get(sandbox_inventory))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1307,7 +1344,7 @@ mod tests {
             workspace: None,
         });
         let address: SocketAddr = "127.0.0.1:47601".parse().unwrap();
-        let state = Arc::new(Shared {
+        let mut state = Arc::new(Shared {
             router: Arc::new(Mutex::new(McpRouter::new())),
             configuration: Arc::new(Mutex::new(config)),
             address,
@@ -1343,7 +1380,7 @@ mod tests {
         assert_eq!(body["fields"][0]["value"], "");
         assert!(!body.to_string().contains("private-value"));
         let response = update_configuration(
-            State(state),
+            State(state.clone()),
             axum::Json(ConfigurationUpdate {
                 plugin: "test".into(),
                 key: "missing".into(),
@@ -1354,6 +1391,11 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(!dir.path().join("config.json").exists());
+        Arc::get_mut(&mut state).unwrap().address = "0.0.0.0:47601".parse().unwrap();
+        assert_eq!(
+            sandbox_inventory(State(state)).await.status(),
+            StatusCode::FORBIDDEN
+        );
     }
     #[test]
     fn encoded_names_and_header_annotations_follow_static_paths() {

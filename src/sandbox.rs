@@ -36,8 +36,22 @@ pub struct Sandbox {
     original: Option<Vec<u8>>,
 }
 
+#[derive(Serialize)]
+pub struct SandboxView {
+    pub plugin: String,
+    pub workspace: Option<PathBuf>,
+    pub approvals: Vec<Approval>,
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::other(message)
+}
+
+fn workspace_key(plugin: &str) -> String {
+    Sha256::digest(plugin.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 pub(crate) fn check_links(path: &Path) -> io::Result<()> {
@@ -79,6 +93,28 @@ fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+fn parse_inventory(root: &Path, raw: Option<&[u8]>) -> io::Result<Inventory> {
+    let inventory: Inventory = raw
+        .map(serde_json::from_slice)
+        .transpose()
+        .map_err(|_| invalid("Invalid sandbox approvals; existing data retained"))?
+        .unwrap_or(Inventory {
+            schema_version: 1,
+            plugins: BTreeMap::new(),
+        });
+    if inventory.schema_version != 1
+        || inventory.plugins.iter().any(|(name, approvals)| {
+            name.is_empty()
+                || approvals
+                    .iter()
+                    .any(|a| !a.path.is_absolute() || a.path.starts_with(root))
+        })
+    {
+        return Err(invalid("Unsupported or invalid sandbox approval inventory"));
+    }
+    Ok(inventory)
+}
+
 struct Lock(PathBuf);
 impl Drop for Lock {
     fn drop(&mut self) {
@@ -87,6 +123,55 @@ impl Drop for Lock {
 }
 
 impl Sandbox {
+    /// Inspect existing sandbox state without creating a root, workspace, or inventory.
+    pub fn inspect(root: PathBuf, plugins: &[String]) -> io::Result<Vec<SandboxView>> {
+        if !root.is_absolute() {
+            return Err(invalid("Sandbox root must be absolute"));
+        }
+        check_links(&root)?;
+        let root = match fs::metadata(&root) {
+            Ok(meta) if meta.is_dir() => Some(fs::canonicalize(&root)?),
+            Ok(_) => return Err(invalid("Sandbox root is not a directory")),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        };
+        let inventory = if let Some(root) = &root {
+            let bytes = read(&root.join("approvals.json"))?;
+            parse_inventory(root, bytes.as_deref())?
+        } else {
+            Inventory {
+                schema_version: 1,
+                plugins: BTreeMap::new(),
+            }
+        };
+        plugins
+            .iter()
+            .map(|plugin| {
+                if plugin.is_empty() {
+                    return Err(invalid("Select a plugin first"));
+                }
+                let workspace = if let Some(root) = &root {
+                    let key = workspace_key(plugin);
+                    let path = root.join("mcps").join(key);
+                    check_links(&path)?;
+                    match fs::metadata(&path) {
+                        Ok(meta) if meta.is_dir() => Some(path),
+                        Ok(_) => return Err(invalid("Sandbox workspace is not a directory")),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    None
+                };
+                Ok(SandboxView {
+                    plugin: plugin.clone(),
+                    workspace,
+                    approvals: inventory.plugins.get(plugin).cloned().unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
     pub fn open(root: PathBuf) -> io::Result<Self> {
         if !root.is_absolute() {
             return Err(invalid("Sandbox root must be absolute"));
@@ -94,25 +179,7 @@ impl Sandbox {
         directory(&root)?;
         let root = fs::canonicalize(root)?;
         let original = read(&root.join("approvals.json"))?;
-        let inventory: Inventory = original
-            .as_ref()
-            .map(|bytes| serde_json::from_slice(bytes))
-            .transpose()
-            .map_err(|_| invalid("Invalid sandbox approvals; existing data retained"))?
-            .unwrap_or(Inventory {
-                schema_version: 1,
-                plugins: BTreeMap::new(),
-            });
-        if inventory.schema_version != 1
-            || inventory.plugins.iter().any(|(name, approvals)| {
-                name.is_empty()
-                    || approvals
-                        .iter()
-                        .any(|a| !a.path.is_absolute() || a.path.starts_with(&root))
-            })
-        {
-            return Err(invalid("Unsupported or invalid sandbox approval inventory"));
-        }
+        let inventory = parse_inventory(&root, original.as_deref())?;
         Ok(Self {
             root,
             inventory,
@@ -129,10 +196,7 @@ impl Sandbox {
         if plugin.is_empty() {
             return Err(invalid("Select a plugin first"));
         }
-        let key: String = Sha256::digest(plugin.as_bytes())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let key = workspace_key(plugin);
         let path = self.root.join("mcps").join(key);
         directory(&path)?;
         Ok(path)
@@ -258,6 +322,37 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn inspection_is_read_only_and_reports_existing_workspace_and_approvals() {
+        let fixture = Fixture::new();
+        let root = fixture.0.join("sandbox");
+        let names = vec!["example".to_string(), "missing".to_string()];
+        let empty = Sandbox::inspect(root.clone(), &names).unwrap();
+        assert!(!root.exists());
+        assert!(
+            empty
+                .iter()
+                .all(|entry| entry.workspace.is_none() && entry.approvals.is_empty())
+        );
+        let mut sandbox = fixture.sandbox();
+        let workspace = sandbox.workspace("example").unwrap();
+        let source = fixture.0.join("document.txt");
+        fs::write(&source, "original").unwrap();
+        sandbox.approve("example", &source).unwrap();
+        let inventory_before = fs::read(root.join("approvals.json")).unwrap();
+        let inspected = Sandbox::inspect(root.clone(), &names).unwrap();
+        assert_eq!(inspected[0].workspace.as_ref(), Some(&workspace));
+        assert_eq!(inspected[0].approvals.len(), 1);
+        assert!(inspected[1].workspace.is_none());
+        assert_eq!(
+            fs::read(root.join("approvals.json")).unwrap(),
+            inventory_before
+        );
+        fs::write(root.join("approvals.json"), b"invalid").unwrap();
+        assert!(Sandbox::inspect(root.clone(), &names).is_err());
+        assert_eq!(fs::read(root.join("approvals.json")).unwrap(), b"invalid");
     }
 
     #[test]
