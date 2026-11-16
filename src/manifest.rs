@@ -247,6 +247,13 @@ pub struct ToolDefinition {
     pub description: String,
     #[serde(rename = "inputSchema", alias = "input_schema")]
     pub input_schema: serde_json::Value,
+    #[serde(
+        rename = "outputSchema",
+        alias = "output_schema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_schema: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<ToolAnnotations>,
 }

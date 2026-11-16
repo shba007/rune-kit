@@ -24,6 +24,14 @@ In addition to executable plugins, Rune Kit natively manages declarative content
 
 See the [MCP gateway contract](docs/MCP-CONTRACT.md) for annotation compatibility, read-only policy, cancellation, timeouts and development checks.
 
+## Goal
+
+Full statement: [`Goal.md`](Goal.md). It describes direction; the rest of this README describes what works today.
+
+**Current goal.** Kit runs every MCP server used by Rune, a local, Jarvis-like AI harness: its own plugins, remote HTTP servers and, as the next major step, third-party stdio servers run as supervised, isolated children. Kit is the source of each tool's input and output schema, from which Rune Studio generates the view of a result, and it provides preview and undo, safety markers and shared binaries such as ffmpeg.
+
+**Not goals.** Running models or wrapping Rune Infer's model operations as tools, holding memory, generating layouts. A non-goal is not a removal order: existing code outside these goals stays until the owner explicitly approves removing it.
+
 ### Features
 
 - ⚡ **Dual Execution Model:** Run sandboxed WebAssembly guest modules (`wasm32-wasip1`) via Extism/Wasmtime, or execute standalone native binaries communicating over JSON-RPC stdio.
@@ -406,7 +414,7 @@ tokio = { version = "1", features = ["full"] }
 serde_json = "1.0"
 ```
 
-### 1. Hosting an MCP Gateway over Stdio
+### 1. Embedded Dispatch (no server)
 
 Load WASM/native instances for embedded dispatch. Use `rune-kit serve` for the
 supported public HTTP transport; this library example does not start a server:

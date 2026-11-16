@@ -69,3 +69,15 @@
 - [x] Terminal restoration guard on normal and error exits
 - [x] Full-frame `NO_COLOR` and `RUNE_ASCII=1` theme support
 - [ ] Background daemon/systemd/Windows Service installation command (`rune-kit service install`)
+
+## 7. Direction (see Goal.md)
+- [ ] Host third-party stdio MCP servers: install from a command and arguments, supervise as a child, expose through the same endpoint and namespace rules as plugins
+- [ ] Enable native process isolation on Windows and Linux so third-party processes do not run with the user's full rights
+- [ ] Decide whether to accept more than one MCP protocol revision for third-party servers
+- [ ] Resolve and install the skills and MCP servers a rune-agent sub-agent names
+- [ ] Expose Rune Lake's memory tools through the gateway
+- [ ] Make calls, arguments and staged changes available to Studio's live timeline, with undo for staged changes
+- [ ] Serve output schemas, validate results against them, and carry author-written display hints; allow a hand-written schema overlay for third-party servers that have none
+- [ ] Let a tool describe a change before making it (preview), beyond file edits
+- [ ] A change signal from servers (new mail, new file) so Rune can propose work without polling
+- [ ] Provide ffmpeg to Rune Infer and Rune Lake as the single provider

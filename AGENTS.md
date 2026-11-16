@@ -1,5 +1,19 @@
 # Rune Kit - Agent Documentation
 
+> `Goal.md` holds the current goals and non-goals; read it before proposing work.
+> It states intent, not status. In short: Kit runs every MCP server the Rune
+> harness uses and is to host third-party stdio MCP servers as supervised,
+> isolated children (not implemented yet; today third-party servers are
+> supported only as remote Streamable HTTP endpoints). Kit is the source of each
+> tool's input and output schema, from which Studio generates the view of a
+> result; Kit also provides preview and undo, safety markers, and shared
+> binaries such as ffmpeg.
+>
+> Not goals for Kit: running models or wrapping Infer's model operations as
+> tools, hosting Studio's outside-agent bridge, holding memory, generating
+> layouts. A non-goal is not a removal order: never remove, disable or rewrite
+> existing code because it is a non-goal without the owner's explicit permission.
+
 ## 1. Overview
 
 - **What it is:** A Rust Cargo workspace implementing a high-performance Model Context Protocol (MCP) plugin runtime host and package manager CLI (`rune-kit`).

@@ -603,7 +603,13 @@ impl WasmPluginInstance {
             return Err(RuntimeError::Timeout(timeout.unwrap().as_secs()));
         }
         let raw = result.map_err(|e| RuntimeError::Execution(e.to_string()))?;
-        Ok(serde_json::from_str(&raw)?)
+        let result: Value = serde_json::from_str(&raw)?;
+        if result.get("structuredContent").is_some() && raw.len() > 8 * 1024 * 1024 {
+            return Err(RuntimeError::Execution(
+                "Plugin result exceeds the 8 MiB limit".into(),
+            ));
+        }
+        Ok(result)
     }
 
     pub fn list_resources(&mut self) -> Result<Vec<ResourceDefinition>, RuntimeError> {
@@ -1120,6 +1126,17 @@ impl NativeSidecar {
         }
 
         let res = resp.get("result").unwrap_or(&resp);
+        if res.get("structuredContent").is_some()
+            && serde_json::to_vec(res)?.len() > 8 * 1024 * 1024
+        {
+            return Err(RuntimeError::Execution(
+                "Plugin result exceeds the 8 MiB limit".into(),
+            ));
+        }
+        if res.get("structuredContent").is_some() || res.get("isError") == Some(&Value::Bool(true))
+        {
+            return Ok(res.clone());
+        }
         if let Some(content_arr) = res.get("content").and_then(Value::as_array)
             && let Some(first) = content_arr.first()
             && let Some(text) = first.get("text").and_then(Value::as_str)

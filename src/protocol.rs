@@ -98,6 +98,10 @@ fn tool_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
         .map_err(|error| error.to_string())
 }
 
+fn output_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
+    tool_validator(schema).map_err(|error| error.replace("inputSchema", "outputSchema"))
+}
+
 impl Default for McpRouter {
     fn default() -> Self {
         Self::new()
@@ -448,11 +452,24 @@ impl McpRouter {
                                     ));
                                     continue;
                                 }
+                                if !matches!(instance, PluginInstance::Remote(_))
+                                    && let Some(schema) = &tool.output_schema
+                                    && let Err(error) = output_validator(schema)
+                                {
+                                    discovery_errors.push(format!(
+                                        "plugin '{ns}', tool '{}': {error}",
+                                        tool.name
+                                    ));
+                                    continue;
+                                }
                                 let mut tool_obj = json!({
                                     "name": full_name,
                                     "description": tool.description,
                                     "inputSchema": tool.input_schema,
                                 });
+                                if let Some(schema) = &tool.output_schema {
+                                    tool_obj["outputSchema"] = schema.clone();
+                                }
                                 if let Some(ref ann) = tool.annotations {
                                     // Emit canonical MCP spec 2025-03-26 names (readOnlyHint, etc.)
                                     // AND legacy names (readOnly, etc.) throughout 0.3.x.
@@ -685,6 +702,20 @@ impl McpRouter {
                             json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":format!("Invalid tool arguments: {error}")}]}}),
                         );
                     }
+                    let output_validator = if matches!(instance, PluginInstance::Remote(_)) {
+                        None
+                    } else if let Some(schema) = &tool.output_schema {
+                        match output_validator(schema) {
+                            Ok(validator) => Some(validator),
+                            Err(error) => {
+                                return Some(
+                                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":format!("Invalid outputSchema for tool '{full_name}': {error}")}}),
+                                );
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let cancel_flag = self.request_cancel.clone();
                     let wasm_handle = if let PluginInstance::Wasm(w) = instance {
                         Some(w.get_cancel_handle())
@@ -716,6 +747,33 @@ impl McpRouter {
                             if matches!(instance, PluginInstance::Remote(_)) {
                                 return Some(json!({"jsonrpc":"2.0","id":id,"result":res}));
                             }
+                            let is_error =
+                                res.get("isError").and_then(Value::as_bool).unwrap_or(false);
+                            if !is_error
+                                && output_validator.is_some()
+                                && res.get("structuredContent").is_none()
+                            {
+                                return Some(
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":format!("Missing structuredContent for tool '{full_name}' with outputSchema")}]}}),
+                                );
+                            }
+                            if !is_error && let Some(structured) = res.get("structuredContent") {
+                                let error = if !structured.is_object() {
+                                    Some("structuredContent must be an object".to_owned())
+                                } else {
+                                    output_validator.as_ref().and_then(|validator| {
+                                        validator
+                                            .validate(structured)
+                                            .err()
+                                            .map(|error| error.to_string())
+                                    })
+                                };
+                                if let Some(error) = error {
+                                    return Some(
+                                        json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":format!("Invalid structured result for tool '{full_name}': {error}")}]}}),
+                                    );
+                                }
+                            }
                             let content = if let Some(content_arr) =
                                 res.get("content").and_then(|c| c.as_array())
                             {
@@ -733,14 +791,11 @@ impl McpRouter {
                                 .get("isError")
                                 .and_then(|e| e.as_bool())
                                 .unwrap_or(false);
-                            Some(json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": {
-                                   "content": content,
-                                   "isError": is_error
-                                }
-                            }))
+                            let mut result = json!({"content":content,"isError":is_error});
+                            if let Some(structured) = res.get("structuredContent") {
+                                result["structuredContent"] = structured.clone();
+                            }
+                            Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
                         }
                         Err(RuntimeError::Cancelled) => Some(json!({
                             "jsonrpc": "2.0",
