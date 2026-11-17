@@ -107,3 +107,49 @@ No native/WASM plugin ABI changes are required. Old public `rune-kit run` fails
 with migration instructions; internal native JSON-RPC pipes remain unchanged.
 The rune-tools Postman collection must be migrated separately by its owner;
 this assignment does not modify sibling repositories.
+
+## Host embedding: plugin filesystem folders
+
+Only a Rust host holding `server::EmbeddedServer` may change an embedded
+plugin's folder while Kit is running:
+
+```rust,ignore
+pub fn set_plugin_param(&self, plugin: &str, key: &str, value: &str) -> Result<(), String>;
+pub fn plugin_params(&self, plugin: &str) -> std::collections::BTreeMap<String, String>;
+```
+
+The setter accepts `allowed_dir` or a manifest configuration field whose
+`config_key` is `allowed_dir`. Other keys, unknown plugins, secret root fields,
+and workspace-only plugins are refused. The path must be an existing absolute
+directory. The embedding-only validator canonicalises it, storing and displaying
+normal Windows drive/UNC paths without the `\\?\` prefix. It does not impose a
+new drive-root restriction. Setup currently excludes these fields and has no
+folder validator; its UI and validation are unchanged.
+
+The value is saved per plugin in `dashboard.json`, using setup's `dashboard.lock`
+and atomic writer. An active save, externally changed dashboard, invalid folder,
+load failure, or save failure returns an error without replacing the old settings
+or instance. Retry busy errors after the current operation/save finishes; an
+external dashboard change requires restarting to load it. Do not call this
+synchronous filesystem/plugin-loading operation on an async executor worker;
+use the host's blocking worker. Only the chosen plugin is reloaded between
+requests; the HTTP listener and other plugins stay running. Native plugins keep
+their existing enforcement limitations; this API does not introduce OS isolation.
+
+`plugin_params` returns declared non-secret configuration plus the effective
+`allowed_dir` (and its declared alias), never arbitrary process environment or
+secret fields. Unknown plugins return an empty map. Default embedded startup
+loads saved per-plugin folders. A host constructing its own router for
+`start_embedded` remains responsible for its initial plugin instances.
+
+No MCP or HTTP route exposes the setter. Tool arguments cannot replace the root,
+and `/management/config` and the TUI continue refusing filesystem root edits.
+Ordinary `serve` startup and setup retain their existing configuration handling;
+this folder override is an embedding facility.
+
+Before this API, `start_default_embedded` passed no explicit parameters, but
+its installed-environment loader merged installed `default_params`, saved plugin
+secrets, and supported host environment parameters (including `ALLOWED_DIR` and
+`RUNE_PARAM_ALLOWED_DIR`). With no supplied root it installed no WASI filesystem
+preopen; it did not infer a folder from CWD. The new API supplies a per-plugin
+root without requiring process-wide environment changes.

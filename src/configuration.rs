@@ -21,6 +21,50 @@ pub struct Plugin {
 }
 
 impl Plugin {
+    pub(crate) fn load_embedded(&self, settings: &Settings) -> Result<PluginInstance, String> {
+        let mut plugin = self.clone();
+        let mut settings = settings.clone();
+        let mut root = settings
+            .plugins
+            .get_mut(&self.name)
+            .and_then(|p| p.remove("allowed_dir"));
+        if let Some(config) = &self.manifest.configuration {
+            for (key, field) in &config.fields {
+                if (field.config_key.as_deref() == Some("allowed_dir") || key == "allowed_dir")
+                    && let Some(value) = settings
+                        .plugins
+                        .get_mut(&self.name)
+                        .and_then(|p| p.remove(key))
+                {
+                    root = Some(value);
+                }
+            }
+        }
+        if let Some(root) = root {
+            if self.workspace.is_some() {
+                return Err(
+                    "Embedded folder changes are unavailable in workspace-only mode".into(),
+                );
+            }
+            plugin.params.insert("allowed_dir".into(), root.clone());
+            plugin.params.insert("ALLOWED_DIR".into(), root.clone());
+            if let Some(config) = &self.manifest.configuration {
+                for (key, field) in &config.fields {
+                    if key == "allowed_dir" || field.config_key.as_deref() == Some("allowed_dir") {
+                        if field.secret {
+                            return Err("Filesystem roots cannot be secret fields".into());
+                        }
+                        settings.shared.remove(key);
+                        for env in &field.env {
+                            plugin.params.insert(env.clone(), root.clone());
+                        }
+                    }
+                }
+            }
+        }
+        plugin.load(&settings)
+    }
+
     fn parameters(&self, settings: &Settings) -> Result<HashMap<String, String>, String> {
         let mut params = self.params.clone();
         if let Some(config) = &self.manifest.configuration {
@@ -118,9 +162,20 @@ pub struct Configuration {
     settings: Settings,
     path: PathBuf,
     original: Option<Vec<u8>>,
+    embedded: bool,
 }
 
-struct SaveLock(PathBuf);
+pub(crate) struct SaveLock(PathBuf);
+impl SaveLock {
+    pub(crate) fn acquire(path: PathBuf) -> std::io::Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        drop(file);
+        Ok(Self(path))
+    }
+}
 impl Drop for SaveLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
@@ -164,6 +219,140 @@ pub fn validate(field: &ConfigurationField, value: &str) -> Result<(), String> {
 }
 
 impl Configuration {
+    pub(crate) fn enable_embedding(&mut self) {
+        self.embedded = true;
+    }
+    pub(crate) fn set_embedded_root(
+        &mut self,
+        router: &Arc<Mutex<McpRouter>>,
+        name: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        let plugin = self
+            .plugins
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| format!("Unknown plugin '{name}'"))?;
+        let field = plugin
+            .manifest
+            .configuration
+            .as_ref()
+            .and_then(|c| c.fields.get(key));
+        if key != "allowed_dir"
+            && !field.is_some_and(|f| f.config_key.as_deref() == Some("allowed_dir"))
+        {
+            return Err(
+                "Embedded parameter changes are restricted to allowed_dir filesystem roots".into(),
+            );
+        }
+        if field.is_some_and(|f| f.secret) {
+            return Err("Filesystem roots cannot be secret fields".into());
+        }
+        if plugin.workspace.is_some() {
+            return Err("Embedded folder changes are unavailable in workspace-only mode".into());
+        }
+        let value = validate_embedded_folder(value)?;
+        let mut router = router
+            .try_lock()
+            .map_err(|_| "Server is busy; retry after the active operation completes")?;
+        let _guard = SaveLock::acquire(self.path.with_extension("lock"))
+            .map_err(|_| "Another configuration save is active; retry after it finishes")?;
+        let disk = match std::fs::read(&self.path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err("Cannot read saved configuration".into()),
+        };
+        if disk != self.original {
+            return Err("Configuration changed outside this server; restart before editing".into());
+        }
+        let mut next = self.settings.clone();
+        let values = next.plugins.entry(name.to_owned()).or_default();
+        // Store the manifest field key, as setup does, and remove older root aliases.
+        values.remove("allowed_dir");
+        if let Some(config) = &plugin.manifest.configuration {
+            for (key, field) in &config.fields {
+                if field.config_key.as_deref() == Some("allowed_dir") {
+                    values.remove(key);
+                }
+            }
+        }
+        values.insert(key.to_owned(), value);
+        let replacement = plugin.load_embedded(&next)?;
+        let mut persisted = next.clone();
+        for plugin in &self.plugins {
+            if let Some(config) = &plugin.manifest.configuration {
+                for (key, field) in &config.fields {
+                    if field.secret {
+                        persisted.shared.remove(key);
+                        if let Some(values) = persisted.plugins.get_mut(&plugin.name) {
+                            values.remove(key);
+                        }
+                    }
+                }
+            }
+        }
+        let bytes =
+            serde_json::to_vec_pretty(&persisted).map_err(|_| "Cannot serialize configuration")?;
+        crate::setup::atomic(&self.path, &bytes)
+            .map_err(|_| "Cannot save configuration; previous settings retained")?;
+        router.register(name.to_owned(), replacement);
+        self.settings = next;
+        self.original = Some(bytes);
+        Ok(())
+    }
+
+    pub(crate) fn embedded_params(&self, name: &str) -> BTreeMap<String, String> {
+        let Some(plugin) = self.plugins.iter().find(|p| p.name == name) else {
+            return BTreeMap::new();
+        };
+        let mut values: BTreeMap<_, _> = self
+            .fields()
+            .into_iter()
+            .filter(|f| f.plugin == name && !f.schema.secret)
+            .map(|f| (f.key, f.value))
+            .collect();
+        let root = self
+            .settings
+            .plugins
+            .get(name)
+            .and_then(|p| p.get("allowed_dir"))
+            .or_else(|| {
+                plugin.manifest.configuration.as_ref().and_then(|c| {
+                    c.fields.iter().find_map(|(key, field)| {
+                        (field.config_key.as_deref() == Some("allowed_dir") && !field.secret)
+                            .then(|| self.settings.plugins.get(name).and_then(|p| p.get(key)))
+                            .flatten()
+                    })
+                })
+            })
+            .or_else(|| plugin.params.get("allowed_dir"))
+            .or_else(|| plugin.params.get("ALLOWED_DIR"));
+        if let Some(root) = root {
+            let secret_root = plugin.manifest.configuration.as_ref().is_some_and(|c| {
+                c.fields.iter().any(|(key, field)| {
+                    field.secret
+                        && (key == "allowed_dir"
+                            || field.config_key.as_deref() == Some("allowed_dir"))
+                })
+            });
+            if !secret_root {
+                values.insert("allowed_dir".into(), root.clone());
+                if let Some(config) = &plugin.manifest.configuration {
+                    for (key, field) in &config.fields {
+                        if !field.secret
+                            && (key == "allowed_dir"
+                                || field.config_key.as_deref() == Some("allowed_dir"))
+                        {
+                            values.insert(key.clone(), root.clone());
+                        }
+                    }
+                }
+            }
+        }
+        values
+    }
+
     pub fn read(path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let original = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
@@ -180,6 +369,7 @@ impl Configuration {
             settings,
             path,
             original,
+            embedded: false,
         })
     }
 
@@ -288,7 +478,12 @@ impl Configuration {
             {
                 return Err("Secret values cannot be shared defaults".into());
             }
-            replacements.push((plugin.name.clone(), plugin.load(&next)?));
+            let replacement = if self.embedded {
+                plugin.load_embedded(&next)?
+            } else {
+                plugin.load(&next)?
+            };
+            replacements.push((plugin.name.clone(), replacement));
         }
         let mut persisted = next.clone();
         for plugin in &self.plugins {
@@ -354,6 +549,23 @@ impl Configuration {
         self.original = Some(bytes);
         Ok(())
     }
+}
+
+// Only the embedding API uses this validator; setup's field selection is unchanged.
+fn validate_embedded_folder(value: &str) -> Result<String, String> {
+    let path = std::path::Path::new(value);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("Filesystem root must be an existing absolute directory".into());
+    }
+    let path = std::fs::canonicalize(path).map_err(|_| "Cannot canonicalise filesystem root")?;
+    let path = path.to_str().ok_or("Filesystem root must be valid UTF-8")?;
+    #[cfg(windows)]
+    let path = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_owned()
+    };
+    Ok(path.to_owned())
 }
 
 #[cfg(test)]

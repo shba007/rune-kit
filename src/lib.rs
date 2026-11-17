@@ -971,6 +971,42 @@ pub fn load_installed_environment(
     headless: bool,
 ) -> Result<(McpRouter, server::Options, configuration::Configuration), Box<dyn std::error::Error>>
 {
+    load_environment(
+        selected,
+        read_only,
+        timeout,
+        workspace_only,
+        allow_tool,
+        param,
+        bind,
+        port,
+        headless,
+        false,
+    )
+}
+
+pub(crate) fn load_embedded_environment(
+    bind: std::net::IpAddr,
+    port: u16,
+) -> Result<(McpRouter, server::Options, configuration::Configuration), Box<dyn std::error::Error>>
+{
+    load_environment(&[], false, 30, false, &[], &[], bind, port, true, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_environment(
+    selected: &[String],
+    read_only: bool,
+    timeout: u64,
+    workspace_only: bool,
+    allow_tool: &[String],
+    param: &[(String, String)],
+    bind: std::net::IpAddr,
+    port: u16,
+    headless: bool,
+    embedded: bool,
+) -> Result<(McpRouter, server::Options, configuration::Configuration), Box<dyn std::error::Error>>
+{
     let pm = PackageManager::new();
     let allow_tool_for_dashboard = allow_tool.to_vec();
     let mut router = McpRouter::new();
@@ -1092,7 +1128,10 @@ pub fn load_installed_environment(
         if let Some(workspace) = &spec.workspace {
             roots.push(format!("{target}: /workspace ({})", workspace.display()));
         }
-        let instance = if workspace_only || lockfile.mcps.contains_key(target) {
+        let instance = if embedded {
+            spec.load_embedded(dashboard_config.settings())
+                .map_err(|e| format!("Cannot load plugin {target}: {e}"))?
+        } else if workspace_only || lockfile.mcps.contains_key(target) {
             spec.load(dashboard_config.settings())
                 .map_err(|e| format!("Cannot load plugin {target}: {e}"))?
         } else {

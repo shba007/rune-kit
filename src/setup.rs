@@ -117,7 +117,7 @@ pub fn plugin_secrets(plugin: &str) -> Result<HashMap<String, String>> {
         .unwrap_or_default();
     Ok(all.get(plugin).cloned().unwrap_or_default())
 }
-fn atomic(path: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn atomic(path: &Path, data: &[u8]) -> io::Result<()> {
     let stage = path.with_extension(format!("setup-{}.tmp", std::process::id()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -472,19 +472,7 @@ impl Wizard {
                 );
             }
         }
-        let lock_path = base.join("dashboard.lock");
-        let lock = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)?;
-        struct Lock(PathBuf);
-        impl Drop for Lock {
-            fn drop(&mut self) {
-                let _ = fs::remove_file(&self.0);
-            }
-        }
-        let _guard = Lock(lock_path);
-        drop(lock);
+        let _guard = crate::configuration::SaveLock::acquire(base.join("dashboard.lock"))?;
         let settings_path = base.join("dashboard.json");
         let mut settings: Settings = match fs::read(&settings_path) {
             Ok(data) => serde_json::from_slice(&data)?,

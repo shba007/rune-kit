@@ -1156,9 +1156,31 @@ pub struct EmbeddedServer {
     pub address: SocketAddr,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<Result<(), String>>,
+    state: Arc<Shared>,
 }
 
 impl EmbeddedServer {
+    /// Change one plugin's filesystem root between requests. This is not an HTTP/MCP API.
+    pub fn set_plugin_param(&self, plugin: &str, key: &str, value: &str) -> Result<(), String> {
+        if self.is_finished() {
+            return Err("Embedded server is stopped".into());
+        }
+        self.state
+            .configuration
+            .try_lock()
+            .map_err(|_| "Configuration is busy; retry")?
+            .set_embedded_root(&self.state.router, plugin, key, value)
+    }
+
+    /// Current non-secret configuration; unknown plugins return an empty map.
+    pub fn plugin_params(&self, plugin: &str) -> std::collections::BTreeMap<String, String> {
+        self.state
+            .configuration
+            .lock()
+            .unwrap()
+            .embedded_params(plugin)
+    }
+
     pub async fn shutdown(mut self) -> Result<(), String> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -1182,8 +1204,9 @@ impl EmbeddedServer {
 pub async fn start_embedded(
     router: McpRouter,
     options: Options,
-    configuration: crate::configuration::Configuration,
+    mut configuration: crate::configuration::Configuration,
 ) -> Result<EmbeddedServer, String> {
+    configuration.enable_embedding();
     validate_bind(options.bind).map_err(|e| e.to_string())?;
     let listener = tokio::net::TcpListener::bind((options.bind, options.port))
         .await
@@ -1272,6 +1295,7 @@ pub async fn start_embedded(
         }
     };
 
+    let embedded_state = state.clone();
     let task = tokio::spawn(async move {
         let res = axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
@@ -1288,6 +1312,7 @@ pub async fn start_embedded(
         address,
         stop: Some(stop_tx),
         task,
+        state: embedded_state,
     })
 }
 
@@ -1296,8 +1321,7 @@ pub async fn start_default_embedded(
     port: u16,
 ) -> Result<EmbeddedServer, String> {
     let (router, options, configuration) =
-        crate::load_installed_environment(&[], false, 30, false, &[], &[], bind, port, true)
-            .map_err(|e| e.to_string())?;
+        crate::load_embedded_environment(bind, port).map_err(|e| e.to_string())?;
     start_embedded(router, options, configuration).await
 }
 
