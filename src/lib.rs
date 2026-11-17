@@ -1129,7 +1129,7 @@ fn load_environment(
             roots.push(format!("{target}: /workspace ({})", workspace.display()));
         }
         let instance = if embedded {
-            spec.load_embedded(dashboard_config.settings())
+            spec.load_embedded(dashboard_config.settings(), false)
                 .map_err(|e| format!("Cannot load plugin {target}: {e}"))?
         } else if workspace_only || lockfile.mcps.contains_key(target) {
             spec.load(dashboard_config.settings())

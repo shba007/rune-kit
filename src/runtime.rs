@@ -80,6 +80,15 @@ host_fn!(host_file_access(user_data: BrokerIdentity; input: String) -> Result<St
     Ok(serde_json::to_string(&response)?)
 });
 
+// Registered for plugins that are not staged so one module can import
+// `host_file_access` and still load; calling it tells the guest to use WASI instead.
+host_fn!(host_file_access_unavailable(user_data: (); input: String) -> Result<String, extism::Error> {
+    let _ = input;
+    let refused: Result<String, extism::Error> =
+        Err(extism::Error::msg("Staged file access is unavailable: this plugin is not staged"));
+    refused
+});
+
 host_fn!(host_cmd_exec(user_data: HostContext; input: String) -> Result<String, extism::Error> {
     let data = user_data.get()?;
     let ctx = data
@@ -475,6 +484,13 @@ impl WasmPluginInstance {
             }
         } else {
             builder
+                .with_function(
+                    "host_file_access",
+                    [PTR],
+                    [PTR],
+                    UserData::new(()),
+                    host_file_access_unavailable,
+                )
                 .with_function(
                     "host_cmd_exec",
                     [PTR],

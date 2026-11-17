@@ -1172,6 +1172,31 @@ impl EmbeddedServer {
             .set_embedded_root(&self.state.router, plugin, key, value)
     }
 
+    /// Run one plugin in staged mode (or return it to direct access). Staged plugins
+    /// never see the real folder: their reads and writes go through the host
+    /// file-access broker, so originals change only through the reviewed
+    /// `/management/changes` apply. Other plugins and remotes are untouched. Requires
+    /// a WASM plugin with a configured `allowed_dir`; the folder is approved for the
+    /// plugin automatically. Not persisted; call again after each restart.
+    pub fn set_plugin_staged(&self, plugin: &str, staged: bool) -> Result<(), String> {
+        if self.is_finished() {
+            return Err("Embedded server is stopped".into());
+        }
+        self.state
+            .configuration
+            .try_lock()
+            .map_err(|_| "Configuration is busy; retry")?
+            .set_embedded_staged(&self.state.router, plugin, staged)
+    }
+
+    pub fn is_plugin_staged(&self, plugin: &str) -> bool {
+        self.state
+            .configuration
+            .lock()
+            .unwrap()
+            .is_embedded_staged(plugin)
+    }
+
     /// Current non-secret configuration; unknown plugins return an empty map.
     pub fn plugin_params(&self, plugin: &str) -> std::collections::BTreeMap<String, String> {
         self.state

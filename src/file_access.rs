@@ -50,7 +50,15 @@ fn bytes(path: &Path) -> io::Result<Vec<u8>> {
     }
     Ok(data)
 }
+const DIRECTORY: &str = "directory";
 fn fingerprint(path: &Path) -> io::Result<Option<String>> {
+    check_links(path)?;
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => return Ok(Some(DIRECTORY.into())),
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    }
     match bytes(path) {
         Ok(data) => Ok(Some(hash(&data))),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -112,6 +120,30 @@ pub enum Operation {
     WriteFile,
     DeleteFile,
     ListDirectory,
+    /// Additive: file or folder existence, kind, size and modification time.
+    Stat,
+    /// Additive: stage creation of one folder (parent must exist, possibly as staged work).
+    CreateDirectory,
+    /// Additive: stage removal of one folder that is empty once staged work is applied.
+    RemoveDirectory,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    #[default]
+    File,
+    Directory,
+}
+#[derive(Serialize)]
+pub struct Stat {
+    pub exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ChangeKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Seconds since the Unix epoch; the staged file's time for staged content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified: Option<u64>,
 }
 #[derive(Serialize)]
 pub struct Response {
@@ -121,6 +153,8 @@ pub struct Response {
     pub data: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entries: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stat: Option<Stat>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +163,8 @@ struct Change {
     path: PathBuf,
     baseline: Option<String>,
     deleted: bool,
+    #[serde(default)]
+    kind: ChangeKind,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -143,6 +179,7 @@ pub struct Review {
     pub deleted: bool,
     pub baseline: Option<String>,
     pub staged_digest: Option<String>,
+    pub kind: ChangeKind,
 }
 impl Review {
     pub fn approval_token(&self) -> io::Result<String> {
@@ -152,6 +189,7 @@ impl Review {
 
 #[derive(Clone, Serialize)]
 pub struct RecoveryInfo {
+    pub kind: ChangeKind,
     pub path: PathBuf,
     pub id: String,
     pub backup_path: PathBuf,
@@ -250,6 +288,7 @@ impl Broker {
             .recoveries_unlocked()?
             .into_iter()
             .map(|(receipt, r)| RecoveryInfo {
+                kind: r.change.kind,
                 path: r.change.path,
                 id: r.change.id,
                 backup_path: receipt.with_extension("backup"),
@@ -308,11 +347,40 @@ impl Broker {
         let resolved = match fs::canonicalize(path) {
             Ok(p) => p,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let parent = fs::canonicalize(
-                    path.parent()
-                        .ok_or_else(|| error("Missing parent directory"))?,
-                )?;
-                parent.join(path.file_name().ok_or_else(|| error("Missing filename"))?)
+                // Walk up to the nearest real ancestor. Every missing folder between it
+                // and the target must itself be staged work.
+                let mut missing = Vec::new();
+                let mut current = path;
+                let base = loop {
+                    missing.push(
+                        current
+                            .file_name()
+                            .ok_or_else(|| error("Missing filename"))?,
+                    );
+                    current = current
+                        .parent()
+                        .ok_or_else(|| error("Missing parent directory"))?;
+                    match fs::canonicalize(current) {
+                        Ok(base) => break base,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e),
+                    }
+                };
+                let mut resolved = base;
+                for (index, name) in missing.iter().rev().enumerate() {
+                    if index > 0 {
+                        // `resolved` is a missing intermediate folder here.
+                        let staged = self.current(&resolved)?;
+                        if !staged.is_some_and(|c| c.kind == ChangeKind::Directory && !c.deleted) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::NotFound,
+                                "Parent folder does not exist",
+                            ));
+                        }
+                    }
+                    resolved.push(name);
+                }
+                resolved
             }
             Err(e) => return Err(e),
         };
@@ -369,6 +437,64 @@ impl Broker {
             Err(e) => Err(e),
         }
     }
+    /// What the plugin sees at `path`: staged work wins over the original.
+    fn overlay(&self, path: &Path, change: &Option<Change>) -> io::Result<Option<ChangeKind>> {
+        if let Some(change) = change {
+            return Ok((!change.deleted).then_some(change.kind));
+        }
+        check_links(path)?;
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => Ok(Some(ChangeKind::Directory)),
+            Ok(_) => Ok(Some(ChangeKind::File)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+    fn require_parent_folder(&self, path: &Path) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| error("Missing parent directory"))?;
+        let change = self.current(parent)?;
+        if self.overlay(parent, &change)? != Some(ChangeKind::Directory) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Parent folder does not exist",
+            ));
+        }
+        Ok(())
+    }
+    fn list(&self, path: &Path, change: &Option<Change>) -> io::Result<Vec<String>> {
+        let mut entries = match fs::read_dir(path) {
+            Ok(read) => read
+                .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+                .collect::<io::Result<Vec<_>>>()?,
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    && change
+                        .as_ref()
+                        .is_some_and(|c| c.kind == ChangeKind::Directory && !c.deleted) =>
+            {
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
+        for review in self.reviews_unlocked()? {
+            if review.path.parent() == Some(path) {
+                let name = review
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                entries.retain(|n| n != &name);
+                if !review.deleted {
+                    entries.push(name);
+                }
+            }
+        }
+        entries.sort();
+        Ok(entries)
+    }
     pub fn request(&self, request: Request) -> io::Result<Response> {
         if request.schema_version != 1 {
             return Err(error("Unsupported file-access schema_version"));
@@ -379,6 +505,13 @@ impl Broker {
         let _lock = self.lock()?;
         let path = self.authorize(&request.path)?;
         let change = self.current(&path)?;
+        let reply = |staged: bool| Response {
+            schema_version: 1,
+            staged,
+            data: None,
+            entries: None,
+            stat: None,
+        };
         match request.operation {
             Operation::ReadFile => {
                 if change.as_ref().is_some_and(|c| c.deleted) {
@@ -386,6 +519,12 @@ impl Broker {
                         io::ErrorKind::NotFound,
                         "File is deleted in staged work",
                     ));
+                }
+                if change
+                    .as_ref()
+                    .is_some_and(|c| c.kind == ChangeKind::Directory)
+                {
+                    return Err(error("Path is a folder"));
                 }
                 let source = if change.is_some() {
                     self.staged(&path)
@@ -403,13 +542,15 @@ impl Broker {
                     )?;
                 }
                 Ok(Response {
-                    schema_version: 1,
                     staged: change.is_some(),
                     data: Some(data),
-                    entries: None,
+                    ..reply(false)
                 })
             }
-            Operation::WriteFile | Operation::DeleteFile => {
+            Operation::WriteFile
+            | Operation::DeleteFile
+            | Operation::CreateDirectory
+            | Operation::RemoveDirectory => {
                 if self
                     .recoveries_unlocked()?
                     .iter()
@@ -419,13 +560,72 @@ impl Broker {
                         "Resolve the previous copy-back recovery before editing this file",
                     ));
                 }
-                let deleted = matches!(request.operation, Operation::DeleteFile);
+                let wants = match request.operation {
+                    Operation::WriteFile | Operation::DeleteFile => ChangeKind::File,
+                    _ => ChangeKind::Directory,
+                };
+                let existing = self.overlay(&path, &change)?;
+                // Re-creating a folder staged for removal simply cancels that removal.
+                if let (Operation::CreateDirectory, Some(c)) = (&request.operation, &change)
+                    && c.deleted
+                    && c.kind == ChangeKind::Directory
+                {
+                    fs::remove_file(self.change(&path))?;
+                    return Ok(reply(false));
+                }
+                if let Some(c) = &change
+                    && c.kind != wants
+                {
+                    return Err(error(
+                        "A different kind of change is already staged for this path",
+                    ));
+                }
+                if let Some(found) = existing
+                    && found != wants
+                {
+                    return Err(error(match wants {
+                        ChangeKind::File => "Path is a folder",
+                        ChangeKind::Directory => "Path is a file",
+                    }));
+                }
+                match request.operation {
+                    Operation::CreateDirectory => {
+                        if existing.is_some() {
+                            return Ok(reply(change.is_some()));
+                        }
+                        self.require_parent_folder(&path)?;
+                    }
+                    Operation::WriteFile => self.require_parent_folder(&path)?,
+                    Operation::RemoveDirectory => {
+                        if existing.is_none() {
+                            return Err(io::Error::new(
+                                io::ErrorKind::NotFound,
+                                "Folder does not exist",
+                            ));
+                        }
+                        if !self.list(&path, &change)?.is_empty() {
+                            return Err(error(
+                                "Folder is not empty; stage removal of its contents first",
+                            ));
+                        }
+                        if change.as_ref().is_some_and(|c| c.baseline.is_none()) {
+                            // Created by staged work and never applied: nothing to review.
+                            fs::remove_file(self.change(&path))?;
+                            return Ok(reply(false));
+                        }
+                    }
+                    _ => {}
+                }
+                let deleted = matches!(
+                    request.operation,
+                    Operation::DeleteFile | Operation::RemoveDirectory
+                );
                 let baseline = match &change {
                     Some(c) => c.baseline.clone(),
                     None => {
                         let observed = self.private.join(format!("{}.observed", Self::key(&path)));
                         match bytes(&observed) {
-                            Ok(data) => {
+                            Ok(data) if wants == ChangeKind::File => {
                                 let observed: Observed =
                                     serde_json::from_slice(&data).map_err(io::Error::other)?;
                                 if observed.path != path {
@@ -433,12 +633,13 @@ impl Broker {
                                 }
                                 Some(observed.digest)
                             }
+                            Ok(_) => fingerprint(&path)?,
                             Err(e) if e.kind() == io::ErrorKind::NotFound => fingerprint(&path)?,
                             Err(e) => return Err(e),
                         }
                     }
                 };
-                if !deleted {
+                if matches!(request.operation, Operation::WriteFile) {
                     atomic(&self.staged(&path), &request.data)?;
                 }
                 json(
@@ -451,39 +652,43 @@ impl Broker {
                         path,
                         baseline,
                         deleted,
+                        kind: wants,
                     },
                 )?;
-                Ok(Response {
-                    schema_version: 1,
-                    staged: true,
-                    data: None,
-                    entries: None,
-                })
+                Ok(reply(true))
             }
-            Operation::ListDirectory => {
-                let mut entries = fs::read_dir(&path)?
-                    .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
-                    .collect::<io::Result<Vec<_>>>()?;
-                for review in self.reviews_unlocked()? {
-                    if review.path.parent() == Some(path.as_path()) {
-                        let name = review
-                            .path
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .into_owned();
-                        entries.retain(|n| n != &name);
-                        if !review.deleted {
-                            entries.push(name);
+            Operation::ListDirectory => Ok(Response {
+                entries: Some(self.list(&path, &change)?),
+                ..reply(false)
+            }),
+            Operation::Stat => {
+                let mut stat = Stat {
+                    exists: false,
+                    kind: None,
+                    size: None,
+                    modified: None,
+                };
+                if let Some(kind) = self.overlay(&path, &change)? {
+                    let source = match (kind, &change) {
+                        (ChangeKind::File, Some(_)) => self.staged(&path),
+                        _ => path.clone(),
+                    };
+                    stat.exists = true;
+                    stat.kind = Some(kind);
+                    if let Ok(meta) = fs::metadata(source) {
+                        if kind == ChangeKind::File {
+                            stat.size = Some(meta.len());
                         }
+                        stat.modified = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs());
                     }
                 }
-                entries.sort();
                 Ok(Response {
-                    schema_version: 1,
-                    staged: false,
-                    data: None,
-                    entries: Some(entries),
+                    stat: Some(stat),
+                    ..reply(false)
                 })
             }
         }
@@ -501,10 +706,10 @@ impl Broker {
                 return Err(error("Invalid staged change identity"));
             }
             let staged_path = self.staged(&change.path);
-            let staged_digest = if change.deleted {
-                None
-            } else {
-                fingerprint(&staged_path)?
+            let staged_digest = match (change.kind, change.deleted) {
+                (_, true) => None,
+                (ChangeKind::Directory, false) => Some(DIRECTORY.to_owned()),
+                (ChangeKind::File, false) => fingerprint(&staged_path)?,
             };
             if !change.deleted && staged_digest.is_none() {
                 return Err(error("Staged content is missing"));
@@ -515,6 +720,7 @@ impl Broker {
                 deleted: change.deleted,
                 baseline: change.baseline,
                 staged_digest,
+                kind: change.kind,
             });
         }
         reviews.sort_by(|a, b| a.path.cmp(&b.path));
@@ -541,19 +747,33 @@ impl Broker {
             .ok_or_else(|| error("Staged change no longer exists"))?;
         if change.baseline != review.baseline
             || change.deleted != review.deleted
+            || change.kind != review.kind
             || fingerprint(&path)? != review.baseline
         {
             return Err(error(
                 "Original changed; resolve the conflict before copy-back",
             ));
         }
-        let staged = if change.deleted {
-            None
-        } else {
-            Some(bytes(&self.staged(&path))?)
+        let staged = match (change.kind, change.deleted) {
+            (ChangeKind::File, false) => Some(bytes(&self.staged(&path))?),
+            _ => None,
         };
-        if staged.as_ref().map(|b| hash(b)) != review.staged_digest {
+        let digest = match change.kind {
+            ChangeKind::File => staged.as_ref().map(|b| hash(b)),
+            ChangeKind::Directory => (!change.deleted).then(|| DIRECTORY.to_owned()),
+        };
+        if digest != review.staged_digest {
             return Err(error("Staged content changed; review it again"));
+        }
+        // Fail before any receipt exists, so a blocked apply leaves nothing to resolve.
+        if !change.deleted && !path.parent().is_some_and(|p| p.is_dir()) {
+            return Err(error("Apply the parent folder first"));
+        }
+        if change.deleted && change.kind == ChangeKind::Directory {
+            let mut contents = fs::read_dir(&path)?;
+            if contents.next().is_some() {
+                return Err(error("Folder is not empty; apply its removals first"));
+            }
         }
         if change.id.is_empty() || !change.id.chars().all(|c| c.is_ascii_digit() || c == '-') {
             return Err(error("Invalid transaction identity"));
@@ -564,7 +784,7 @@ impl Broker {
             return Err(error("Resolve the existing recovery record first"));
         }
         let backup = self.private.join(format!("{key}.backup"));
-        if change.baseline.is_some() {
+        if change.kind == ChangeKind::File && change.baseline.is_some() {
             atomic(&backup, &bytes(&path)?)?;
         }
         let mut recovery = Recovery {
@@ -578,10 +798,15 @@ impl Broker {
                 "Original changed during preparation; backup retained",
             ));
         }
-        if let Some(data) = staged {
-            atomic(&path, &data)?;
-        } else if path.exists() {
-            fs::remove_file(&path)?;
+        match (change.kind, staged) {
+            (ChangeKind::Directory, _) if change.deleted => fs::remove_dir(&path)?,
+            (ChangeKind::Directory, _) => fs::create_dir(&path)?,
+            (ChangeKind::File, Some(data)) => atomic(&path, &data)?,
+            (ChangeKind::File, None) => {
+                if path.exists() {
+                    fs::remove_file(&path)?;
+                }
+            }
         }
         recovery.completed = Some(now()?);
         json(&receipt, &recovery)?;
@@ -642,14 +867,28 @@ impl Broker {
                 "Original changed after copy-back; backup retained for manual resolution",
             ));
         }
-        if recovery.change.baseline.is_some() {
-            let backup = bytes(&receipt.with_extension("backup"))?;
-            if Some(hash(&backup)) != recovery.change.baseline {
-                return Err(error("Recovery backup integrity check failed"));
+        match recovery.change.kind {
+            ChangeKind::Directory => {
+                if recovery.change.baseline.is_some() {
+                    if !path.is_dir() {
+                        fs::create_dir(&path)?;
+                    }
+                } else if path.is_dir() {
+                    // Fails, keeping the record, while anything still lives inside.
+                    fs::remove_dir(&path)?;
+                }
             }
-            atomic(&path, &backup)?;
-        } else if path.exists() {
-            fs::remove_file(&path)?;
+            ChangeKind::File => {
+                if recovery.change.baseline.is_some() {
+                    let backup = bytes(&receipt.with_extension("backup"))?;
+                    if Some(hash(&backup)) != recovery.change.baseline {
+                        return Err(error("Recovery backup integrity check failed"));
+                    }
+                    atomic(&path, &backup)?;
+                } else if path.exists() {
+                    fs::remove_file(&path)?;
+                }
+            }
         }
         recovery.completed = Some(now()?);
         json(&receipt, &recovery)?;
@@ -669,6 +908,7 @@ impl Broker {
             .recoveries_unlocked()?
             .into_iter()
             .map(|(receipt, r)| RecoveryInfo {
+                kind: r.change.kind,
                 path: r.change.path,
                 id: r.change.id,
                 backup_path: receipt.with_extension("backup"),
@@ -1047,5 +1287,144 @@ mod tests {
         let mut sandbox = Sandbox::open(f.root.join("sandbox")).unwrap();
         sandbox.revoke("fixture", &f.file).unwrap();
         assert!(f.request(Operation::ReadFile, &f.file, &[]).is_err());
+    }
+
+    #[test]
+    fn folders_stat_and_moves_are_staged_reviewable_and_undoable() {
+        let f = Fixture::new(true);
+        let root = f.file.parent().unwrap().to_owned();
+        let sub = root.join("sub");
+        let nested = sub.join("nested");
+        let moved = nested.join("moved.txt");
+        let stat = f
+            .request(Operation::Stat, &f.file, &[])
+            .unwrap()
+            .stat
+            .unwrap();
+        assert!(stat.exists && stat.kind == Some(ChangeKind::File) && stat.size == Some(8));
+        // A folder whose parent does not exist yet cannot be staged first.
+        assert!(f.request(Operation::CreateDirectory, &nested, &[]).is_err());
+        assert!(
+            f.request(Operation::CreateDirectory, &sub, &[])
+                .unwrap()
+                .staged
+        );
+        f.request(Operation::CreateDirectory, &nested, &[]).unwrap();
+        // Creating an existing or already staged folder is a no-op.
+        f.request(Operation::CreateDirectory, &sub, &[]).unwrap();
+        f.request(Operation::CreateDirectory, &root, &[]).unwrap();
+        assert!(!sub.exists());
+        let stat = f
+            .request(Operation::Stat, &nested, &[])
+            .unwrap()
+            .stat
+            .unwrap();
+        assert!(stat.exists && stat.kind == Some(ChangeKind::Directory));
+        // A move is read + write + delete; every part is a reviewable item.
+        let data = f
+            .request(Operation::ReadFile, &f.file, &[])
+            .unwrap()
+            .data
+            .unwrap();
+        f.request(Operation::WriteFile, &moved, &data).unwrap();
+        f.request(Operation::DeleteFile, &f.file, &[]).unwrap();
+        assert_eq!(fs::read(&f.file).unwrap(), b"original");
+        assert!(!sub.exists());
+        let names = |dir: &Path| {
+            f.request(Operation::ListDirectory, dir, &[])
+                .unwrap()
+                .entries
+                .unwrap()
+        };
+        assert_eq!(names(&root), vec!["sub"]);
+        assert_eq!(names(&sub), vec!["nested"]);
+        assert_eq!(names(&nested), vec!["moved.txt"]);
+        assert_eq!(
+            f.request(Operation::ReadFile, &moved, &[])
+                .unwrap()
+                .data
+                .unwrap(),
+            b"original"
+        );
+        assert!(
+            !f.request(Operation::Stat, &f.file, &[])
+                .unwrap()
+                .stat
+                .unwrap()
+                .exists
+        );
+        assert!(f.request(Operation::RemoveDirectory, &sub, &[]).is_err());
+        assert!(f.request(Operation::WriteFile, &sub, b"x").is_err());
+        assert!(f.request(Operation::ReadFile, &sub, &[]).is_err());
+        let reviews = f.broker.reviews().unwrap();
+        assert_eq!(reviews.len(), 4);
+        // A child cannot be applied before its folder; nothing is left to resolve.
+        let child = reviews
+            .iter()
+            .find(|r| r.path.ends_with("moved.txt"))
+            .unwrap();
+        assert!(f.broker.apply_review(child).is_err());
+        assert!(f.broker.recoveries().unwrap().is_empty());
+        for review in f.broker.reviews().unwrap() {
+            f.broker.apply_review(&review).unwrap();
+        }
+        assert_eq!(fs::read(&moved).unwrap(), b"original");
+        assert!(!f.file.exists());
+        assert!(f.broker.reviews().unwrap().is_empty());
+        let mut recoveries = f.broker.recoveries().unwrap();
+        assert_eq!(recoveries.len(), 4);
+        // Undo deepest paths first, then the deleted original.
+        recoveries.sort_by(|a, b| {
+            b.path
+                .components()
+                .count()
+                .cmp(&a.path.components().count())
+        });
+        for info in &recoveries {
+            f.broker.restore(info).unwrap();
+        }
+        assert_eq!(fs::read(&f.file).unwrap(), b"original");
+        assert!(!sub.exists());
+    }
+
+    #[test]
+    fn folder_removal_is_reviewable_cancelable_and_restorable() {
+        let f = Fixture::new(true);
+        let root = f.file.parent().unwrap().to_owned();
+        let empty = root.join("empty");
+        fs::create_dir(&empty).unwrap();
+        f.request(Operation::RemoveDirectory, &empty, &[]).unwrap();
+        assert!(empty.exists());
+        assert!(
+            !f.request(Operation::Stat, &empty, &[])
+                .unwrap()
+                .stat
+                .unwrap()
+                .exists
+        );
+        let review = f.broker.reviews().unwrap().remove(0);
+        assert!(review.deleted && review.kind == ChangeKind::Directory);
+        // Creating it again cancels the staged removal.
+        f.request(Operation::CreateDirectory, &empty, &[]).unwrap();
+        assert!(f.broker.reviews().unwrap().is_empty());
+        f.request(Operation::RemoveDirectory, &empty, &[]).unwrap();
+        f.broker
+            .apply_review(&f.broker.reviews().unwrap().remove(0))
+            .unwrap();
+        assert!(!empty.exists());
+        f.broker
+            .restore(&f.broker.recoveries().unwrap().remove(0))
+            .unwrap();
+        assert!(empty.is_dir());
+        // A folder created and removed in staged work leaves nothing to review.
+        let scratch = root.join("scratch");
+        f.request(Operation::CreateDirectory, &scratch, &[])
+            .unwrap();
+        f.request(Operation::RemoveDirectory, &scratch, &[])
+            .unwrap();
+        assert!(f.broker.reviews().unwrap().is_empty());
+        // Removing a folder that still has files is refused.
+        fs::write(empty.join("file.txt"), b"x").unwrap();
+        assert!(f.request(Operation::RemoveDirectory, &empty, &[]).is_err());
     }
 }

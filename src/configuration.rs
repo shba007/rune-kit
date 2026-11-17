@@ -21,7 +21,11 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    pub(crate) fn load_embedded(&self, settings: &Settings) -> Result<PluginInstance, String> {
+    pub(crate) fn load_embedded(
+        &self,
+        settings: &Settings,
+        staged: bool,
+    ) -> Result<PluginInstance, String> {
         let mut plugin = self.clone();
         let mut settings = settings.clone();
         let mut root = settings
@@ -40,6 +44,11 @@ impl Plugin {
                 }
             }
         }
+        let staged_root = root.clone().or_else(|| {
+            ["allowed_dir", "ALLOWED_DIR"]
+                .iter()
+                .find_map(|key| self.params.get(*key).cloned())
+        });
         if let Some(root) = root {
             if self.workspace.is_some() {
                 return Err(
@@ -62,7 +71,41 @@ impl Plugin {
                 }
             }
         }
+        if staged && self.workspace.is_none() {
+            let root = staged_root.ok_or("Staged mode needs a configured allowed_dir folder")?;
+            return plugin.load_staged(&settings, &root);
+        }
         plugin.load(&settings)
+    }
+
+    /// Per-plugin staged mode for embedded hosts. The real folder is never mounted
+    /// into the guest; reads and writes go through the host file-access broker, so
+    /// originals change only when the host applies a reviewed change.
+    fn load_staged(&self, settings: &Settings, root: &str) -> Result<PluginInstance, String> {
+        if self.kind != ExecutionKind::Wasm {
+            return Err("Only WASM plugins can run in staged mode".into());
+        }
+        let root = validate_embedded_folder(root)?;
+        let mut params = self.parameters(settings)?;
+        params.insert("rune_staged".into(), "true".into());
+        params.insert("rune_staged_root".into(), root.clone());
+        let bytes = std::fs::read(&self.path).map_err(|_| "Cannot read plugin payload")?;
+        let storage =
+            rune_kit_core::paths::sandbox_root().map_err(|_| "Cannot resolve sandbox storage")?;
+        let mut sandbox = rune_kit_core::sandbox::Sandbox::open(storage)
+            .map_err(|_| "Cannot open sandbox storage")?;
+        sandbox
+            .approve(&self.name, std::path::Path::new(&root))
+            .map_err(|_| "Cannot approve the folder for staged changes")?;
+        WasmPluginInstance::load_with_file_access(
+            &self.name,
+            bytes,
+            params,
+            self.manifest.clone(),
+            &sandbox,
+        )
+        .map(|p| PluginInstance::Wasm(Box::new(p)))
+        .map_err(|_| "Cannot load staged WASM plugin; native helpers are unavailable".into())
     }
 
     fn parameters(&self, settings: &Settings) -> Result<HashMap<String, String>, String> {
@@ -163,6 +206,7 @@ pub struct Configuration {
     path: PathBuf,
     original: Option<Vec<u8>>,
     embedded: bool,
+    staged: std::collections::BTreeSet<String>,
 }
 
 pub(crate) struct SaveLock(PathBuf);
@@ -278,7 +322,7 @@ impl Configuration {
             }
         }
         values.insert(key.to_owned(), value);
-        let replacement = plugin.load_embedded(&next)?;
+        let replacement = plugin.load_embedded(&next, self.staged.contains(name))?;
         let mut persisted = next.clone();
         for plugin in &self.plugins {
             if let Some(config) = &plugin.manifest.configuration {
@@ -300,6 +344,39 @@ impl Configuration {
         self.settings = next;
         self.original = Some(bytes);
         Ok(())
+    }
+
+    /// Switch one plugin between direct and staged file access. Nothing is saved to
+    /// disk; the setting lasts for this server's lifetime.
+    pub(crate) fn set_embedded_staged(
+        &mut self,
+        router: &Arc<Mutex<McpRouter>>,
+        name: &str,
+        staged: bool,
+    ) -> Result<(), String> {
+        let plugin = self
+            .plugins
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| format!("Unknown plugin '{name}'"))?;
+        if plugin.workspace.is_some() {
+            return Err("Plugin is already staged by workspace-only mode".into());
+        }
+        let mut router = router
+            .try_lock()
+            .map_err(|_| "Server is busy; retry after the active operation completes")?;
+        let replacement = plugin.load_embedded(&self.settings, staged)?;
+        router.register(name.to_owned(), replacement);
+        if staged {
+            self.staged.insert(name.to_owned());
+        } else {
+            self.staged.remove(name);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_embedded_staged(&self, name: &str) -> bool {
+        self.staged.contains(name)
     }
 
     pub(crate) fn embedded_params(&self, name: &str) -> BTreeMap<String, String> {
@@ -370,6 +447,7 @@ impl Configuration {
             path,
             original,
             embedded: false,
+            staged: Default::default(),
         })
     }
 
@@ -479,7 +557,7 @@ impl Configuration {
                 return Err("Secret values cannot be shared defaults".into());
             }
             let replacement = if self.embedded {
-                plugin.load_embedded(&next)?
+                plugin.load_embedded(&next, self.staged.contains(&plugin.name))?
             } else {
                 plugin.load(&next)?
             };
