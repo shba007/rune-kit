@@ -719,7 +719,6 @@ pub struct NativeSidecar {
     pub name: String,
     binary_path: PathBuf,
     params: HashMap<String, String>,
-    #[allow(dead_code)]
     manifest: PluginManifest,
     child: Option<NativeProcess>,
     isolation: Option<crate::native_isolation::Policy>,

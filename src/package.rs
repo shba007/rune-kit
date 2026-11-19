@@ -179,17 +179,6 @@ impl Default for PackageManager {
 }
 
 impl PackageManager {
-    pub async fn fetch_version_metadata(
-        &self,
-        name: &str,
-        version: &str,
-    ) -> Result<crate::registry::VersionMetadata, PackageError> {
-        let index: serde_json::Value = reqwest::Client::new()
-            .get("https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json")
-            .send().await?.error_for_status()?.json().await?;
-        crate::registry::VersionMetadata::from_value(&index[name]["versions"][version])
-    }
-
     pub fn new() -> Self {
         let base_dir = crate::paths::managed_root().expect("Cannot initialize Kit storage");
 

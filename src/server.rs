@@ -22,7 +22,6 @@ use std::{
 };
 use tokio::sync::{Semaphore, mpsc};
 
-pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:47601/mcp";
 const HISTORY: usize = 64;
 const BODY_LIMIT: usize = 256 * 1024;
 
