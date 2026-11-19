@@ -1,4 +1,3 @@
-//! Native launch boundary. Production enablement requires all three OS checks.
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::process::{Command, Stdio};
@@ -8,7 +7,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// No environment variable or user configuration can bypass this release gate.
 pub const VALIDATED_ON_ALL_PLATFORMS: bool = false;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -117,8 +115,6 @@ fn candidate(
     worker: Option<&Path>,
 ) -> io::Result<Process> {
     let policy = Policy::new(&policy.executable, &policy.workspace)?;
-    // Only explicit plugin parameters cross the boundary; host credentials,
-    // dynamic-loader overrides and startup hooks never do.
     let mut clean = HashMap::new();
     for (key, value) in params {
         let upper = key.to_ascii_uppercase();
@@ -198,7 +194,6 @@ fn candidate(
     }
 }
 
-/// Called from the binary's synchronous entry point before a Tokio runtime exists.
 pub fn worker_entry() -> Option<io::Result<()>> {
     let mut args = std::env::args_os();
     args.next();

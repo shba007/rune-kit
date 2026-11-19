@@ -65,8 +65,6 @@ pub struct SidecarExecRequest {
     pub params: Value,
 }
 
-// Additive cooperative API for Rune Tools. It is intentionally unavailable to
-// unrestricted native processes; user approval is never a guest operation.
 #[derive(Clone)]
 struct BrokerIdentity {
     name: String,
@@ -80,8 +78,6 @@ host_fn!(host_file_access(user_data: BrokerIdentity; input: String) -> Result<St
     Ok(serde_json::to_string(&response)?)
 });
 
-// Registered for plugins that are not staged so one module can import
-// `host_file_access` and still load; calling it tells the guest to use WASI instead.
 host_fn!(host_file_access_unavailable(user_data: (); input: String) -> Result<String, extism::Error> {
     let _ = input;
     let refused: Result<String, extism::Error> =
@@ -332,8 +328,6 @@ impl WasmPluginInstance {
         Self::load_with_workspace(name, bytes, params, manifest, None, None)
     }
 
-    /// Only the given workspace is mounted, at /workspace. No native host bridges
-    /// are registered; modules importing those bridges fail to instantiate.
     pub fn load_in_workspace(
         name: &str,
         bytes: Vec<u8>,
@@ -381,7 +375,6 @@ impl WasmPluginInstance {
         broker: Option<BrokerIdentity>,
     ) -> Result<Self, RuntimeError> {
         let provisioner = BinaryProvisioner::new();
-        // Inject provisioned binaries and update PATH for guest execution
         if workspace.is_none() {
             provisioner.inject_env_vars(&manifest.capabilities.exec.allowed_binaries, &mut params);
         }
@@ -452,7 +445,6 @@ impl WasmPluginInstance {
             }
             extism_manifest = extism_manifest.with_allowed_path(root.clone(), root);
         }
-        // No configured root means no WASI preopen, never the host working directory.
 
         let extism_manifest = extism_manifest.with_config(params.clone().into_iter());
 
@@ -798,7 +790,6 @@ impl NativeSidecar {
 
         let mut merged_params = params;
         let provisioner = BinaryProvisioner::new();
-        // Inject provisioned binaries and update PATH for native process execution
         provisioner.inject_env_vars(
             &resolved_manifest.capabilities.exec.allowed_binaries,
             &mut merged_params,
@@ -1029,8 +1020,6 @@ impl NativeSidecar {
     }
 
     pub fn get_info(&mut self) -> Result<PluginInfo, RuntimeError> {
-        // Rune Tools exposes info on its private ABI. Retain the legacy probe
-        // for older standalone plugins; neither operation is public MCP discovery.
         let mut resp = self.send_request("info", json!({}))?;
         if resp.get("error").is_some() {
             resp = self.send_request("initialize", json!({}))?;
@@ -1267,7 +1256,6 @@ impl PluginInstance {
             .map(PluginInstance::Native)
     }
 
-    /// A bounded inventory probe; does not keep a gateway or execute tools.
     pub fn discover_tools(
         &mut self,
         cancel: Arc<std::sync::atomic::AtomicBool>,

@@ -1,5 +1,3 @@
-//! Workspace and approval inventory only. These records do not grant runtime access,
-//! isolate writes, copy files, or authorize copying changes back to originals.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -123,7 +121,6 @@ impl Drop for Lock {
 }
 
 impl Sandbox {
-    /// Inspect existing sandbox state without creating a root, workspace, or inventory.
     pub fn inspect(root: PathBuf, plugins: &[String]) -> io::Result<Vec<SandboxView>> {
         if !root.is_absolute() {
             return Err(invalid("Sandbox root must be absolute"));
@@ -191,7 +188,6 @@ impl Sandbox {
         &self.root
     }
 
-    /// Plugin identifiers never become path components, including local artifact paths.
     pub fn workspace(&self, plugin: &str) -> io::Result<PathBuf> {
         if plugin.is_empty() {
             return Err(invalid("Select a plugin first"));
@@ -210,7 +206,6 @@ impl Sandbox {
             .unwrap_or_default()
     }
 
-    /// Records intent only; does not read file contents or change plugin permissions.
     pub fn approve(&mut self, plugin: &str, path: &Path) -> io::Result<()> {
         if plugin.is_empty() || !path.is_absolute() {
             return Err(invalid(
@@ -239,7 +234,6 @@ impl Sandbox {
         self.save(next)
     }
 
-    /// Revoking approval never removes the workspace or any external data.
     pub fn revoke(&mut self, plugin: &str, path: &Path) -> io::Result<()> {
         let mut next = self.inventory.clone();
         if let Some(approvals) = next.plugins.get_mut(plugin) {

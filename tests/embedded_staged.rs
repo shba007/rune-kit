@@ -1,5 +1,3 @@
-//! Per-plugin staged mode for the embedded server: originals change only through the
-//! host-side `/management/changes` approval token, never through the guest.
 use rune_kit::{
     ExecutionKind, McpRouter, PluginManifest,
     configuration::{Configuration, Plugin},
@@ -38,7 +36,6 @@ fn tools() -> String {
     )
 }
 
-/// A guest that runs the given broker requests in order and returns the last response.
 fn sequence_guest(requests: &[Value]) -> Vec<u8> {
     let mut body = String::new();
     for request in requests {
@@ -67,7 +64,6 @@ fn sequence_guest(requests: &[Value]) -> Vec<u8> {
     .unwrap()
 }
 
-/// A guest from an unrelated plugin: it also imports the broker but never needs it.
 fn plain_guest() -> Vec<u8> {
     let reply = r#"{"content":[{"type":"text","text":"unstaged ok"}]}"#;
     wat::parse_str(format!(
@@ -166,7 +162,6 @@ fn review<'a>(changes: &'a Value, file: &str) -> &'a Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn staged_plugin_changes_originals_only_through_host_approval_and_coexists() {
     let dir = tempfile::tempdir().unwrap();
-    // Sandbox and approvals live under the data override, never the real home.
     unsafe { std::env::set_var("RUNE_KIT_DATA_DIR", dir.path().join("data")) };
     let real = dir.path().join("real");
     std::fs::create_dir(&real).unwrap();
@@ -227,7 +222,6 @@ async fn staged_plugin_changes_originals_only_through_host_approval_and_coexists
         }
     };
 
-    // Staged mode needs a folder and a known WASM plugin.
     assert!(
         server
             .set_plugin_staged("fs", true)
@@ -241,22 +235,18 @@ async fn staged_plugin_changes_originals_only_through_host_approval_and_coexists
         .unwrap();
     server.set_plugin_staged("fs", true).unwrap();
     assert!(server.is_plugin_staged("fs"));
-    // Changing the folder later keeps the plugin staged.
     server
         .set_plugin_param("fs", "allowed_dir", real.to_str().unwrap())
         .unwrap();
     assert!(server.is_plugin_staged("fs"));
 
-    // The plugin reads back what it wrote, while the original stays untouched.
     let reply = call("fs__go").await;
     let text = reply.to_string();
-    // "staged" as the JSON byte array the broker returns.
     assert!(text.contains("115,116,97,103,101,100"), "{reply}");
     assert_ne!(reply["result"]["isError"], true, "{reply}");
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "original");
     assert!(!real.join("sub").exists());
 
-    // An unstaged plugin keeps working beside it and has no reviews.
     let plain_reply = call("plain__go").await;
     assert_eq!(
         plain_reply["result"]["content"][0]["text"], "unstaged ok",
@@ -273,14 +263,12 @@ async fn staged_plugin_changes_originals_only_through_host_approval_and_coexists
     assert_eq!(pending["reviews"].as_array().unwrap().len(), 3, "{pending}");
     let token = |c: &Value, f: &str| review(c, f)["approval"].clone();
 
-    // Unknown and stale tokens change nothing.
     assert!(!act(&client, &base, "apply", &json!("0".repeat(64))).await);
     std::fs::write(&a, "external").unwrap();
     assert!(!act(&client, &base, "apply", &token(&pending, "a.txt")).await);
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "external");
     std::fs::write(&a, "original").unwrap();
 
-    // Folders apply before their contents.
     let pending = changes(&client, &base, "fs").await;
     assert!(!act(&client, &base, "apply", &token(&pending, "b.txt")).await);
     assert!(!real.join("sub").exists());
@@ -294,10 +282,8 @@ async fn staged_plugin_changes_originals_only_through_host_approval_and_coexists
         std::fs::read_to_string(real.join("sub/b.txt")).unwrap(),
         "nested"
     );
-    // A consumed token cannot be replayed.
     assert!(!act(&client, &base, "apply", &token(&pending, "a.txt")).await);
 
-    // Restore brings the original back.
     let after = changes(&client, &base, "fs").await;
     let recovery = after["recoveries"]
         .as_array()
@@ -309,7 +295,6 @@ async fn staged_plugin_changes_originals_only_through_host_approval_and_coexists
     assert!(act(&client, &base, "restore", &recovery).await);
     assert_eq!(std::fs::read_to_string(&a).unwrap(), "original");
 
-    // Leaving staged mode removes the broker; the guest then fails cleanly.
     server.set_plugin_staged("fs", false).unwrap();
     assert!(!server.is_plugin_staged("fs"));
     let off = call("fs__go").await;

@@ -9,7 +9,6 @@ pub fn root() -> PathBuf {
 pub fn binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_rune-kit"))
 }
-// Shared by integration binaries; not every binary needs terminal fixtures.
 #[allow(dead_code)]
 pub fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
@@ -24,8 +23,6 @@ pub fn terminal_text(bytes: &[u8]) -> String {
     );
     let mut history = String::new();
     let mut previous = String::new();
-    // Preserve rendered screens before a control sequence changes/clears them,
-    // including the alternate screen before terminal restoration on exit.
     for chunk in bytes.split_inclusive(|byte| *byte == 0x1b) {
         parser.process(chunk);
         let screen = parser.screen().contents();

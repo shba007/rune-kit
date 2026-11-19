@@ -28,8 +28,6 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const REGISTRY: &str =
     "https://raw.githubusercontent.com/shba007/rune-tools/refs/heads/main/registry/index.json";
-// Initial compatibility set, not a second dependency catalog. New releases must
-// publish dependency metadata or be reviewed before the wizard enables them.
 const SUPPORTED: [(&str, &str); 5] = [
     ("rune-time", "0.3.0"),
     ("rune-fetch", "0.4.0"),
@@ -414,7 +412,6 @@ impl Wizard {
             }
         }
     }
-    // true completes setup. Cancellation is handled by the terminal owner.
     fn key(&mut self, key: KeyCode, handle: &tokio::runtime::Handle) -> bool {
         match self.step {
             Step::Network=>match key {

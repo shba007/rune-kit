@@ -1,8 +1,4 @@
 #!/bin/sh
-# Rune Kit installer for Linux/macOS. No root or Rust toolchain required.
-# curl -fsSL https://raw.githubusercontent.com/shba007/rune-kit/main/install.sh | sh
-# Overrides: RUNE_KIT_VERSION, RUNE_KIT_INSTALL_DIR, RUNE_KIT_BASE_URL,
-# RUNE_KIT_TARGET (advanced). Mirrors require a pinned version and SHA-256 sidecar.
 set -eu
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -50,7 +46,6 @@ sha256() {
     elif have openssl; then openssl dgst -sha256 "$1" | sed 's/^.*= //'
     else die 'A SHA-256 tool (sha256sum, shasum or openssl) is required.'; fi
 }
-# mktemp owns this private directory. No user directory is recursively removed.
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/rune-kit.XXXXXXXX") || die 'Cannot create temporary directory.'
 stage=
 cleanup() { [ -z "$stage" ] || rm -f -- "$stage"; rm -rf -- "$tmp"; }
@@ -68,7 +63,6 @@ case "$expected" in *[!0-9a-f]*|'') die 'Invalid SHA-256 checksum.' ;; esac
 [ "${#expected}" -eq 64 ] || die 'Invalid SHA-256 checksum.'
 actual=$(sha256 "$tmp/package.tar.gz")
 [ "$actual" = "$expected" ] || die 'Checksum mismatch; existing installation was not changed.'
-# Extract one known root entry only: never unpack arbitrary archive paths.
 entry=$(tar -tzf "$tmp/package.tar.gz" | grep -E '^(\./)?rune-kit$' | head -n 1 || true)
 if [ -z "$entry" ]; then entry=$(tar -tzf "$tmp/package.tar.gz" | grep -E '^(\./)?rune$' | head -n 1 || true); fi
 [ -n "$entry" ] || die 'Archive contains neither rune-kit nor legacy rune.'

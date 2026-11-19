@@ -1,4 +1,3 @@
-//! Process boundary isolates Cocogitto's logging dependencies from Wasmtime.
 use std::{
     io::Write,
     path::{Path, PathBuf},

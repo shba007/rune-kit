@@ -164,8 +164,6 @@ impl BinaryProvisioner {
         Err(ProvisionError::NotFound(name.to_string()))
     }
 
-    /// Injects `<NAME>_PATH` environment variables and prepends the directory of all
-    /// provisioned allowlisted binaries into the target environment's `PATH`.
     pub fn inject_env_vars(&self, allowed_binaries: &[String], envs: &mut HashMap<String, String>) {
         let mut bin_dirs: Vec<String> = Vec::new();
 

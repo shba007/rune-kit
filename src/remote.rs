@@ -1,4 +1,3 @@
-//! External Streamable HTTP MCP client. Owns no remote process or filesystem.
 use crate::{
     headers,
     manifest::{PluginInfo, PluginManifest, PromptDefinition, ResourceDefinition, ToolDefinition},

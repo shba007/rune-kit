@@ -784,8 +784,6 @@ fn serve_dashboard_discovers_tools_and_restores_terminal() {
         while std::time::Instant::now() < deadline {
             if let Ok(bytes) = rx.recv_timeout(Duration::from_millis(100)) {
                 evidence.extend(bytes);
-                // A PTY is a transport, not a terminal emulator. Answer DSR,
-                // which a real terminal answers during Crossterm initialization.
                 if evidence.ends_with(b"\x1b[6n") {
                     writer.write_all(b"\x1b[1;1R").unwrap();
                     writer.flush().unwrap();

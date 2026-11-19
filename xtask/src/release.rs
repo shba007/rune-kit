@@ -1,4 +1,3 @@
-//! Thin integration: Cocogitto owns semantic classification and Markdown rendering.
 use crate::cocogitto::{Commit, Generated, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

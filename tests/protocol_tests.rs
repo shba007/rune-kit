@@ -98,12 +98,10 @@ fn test_manifest_tool_rules_parsing() {
     assert_eq!(read_rule.idempotent, Some(true));
     assert_eq!(read_rule.destructive, Some(false));
 
-    // Conversion to ToolAnnotations: rule fields map to *Hint fields
     let annotations: ToolAnnotations = read_rule.clone().into();
     assert_eq!(annotations.read_only_hint, Some(true));
     assert_eq!(annotations.destructive_hint, Some(false));
 
-    // KF-1: Serialised wire names must use MCP spec 2025-03-26 *Hint suffix
     let ann_json = serde_json::to_value(&annotations).unwrap();
     assert_eq!(
         ann_json["readOnlyHint"], true,
@@ -121,17 +119,12 @@ fn test_manifest_tool_rules_parsing() {
         ann_json["openWorldHint"], false,
         "canonical openWorldHint must be present"
     );
-    // Old names must NOT appear in the ToolAnnotations serialisation itself
-    // (legacy aliases are only injected at the protocol layer in tools/list)
     assert!(
         ann_json.get("readOnly").is_none(),
         "readOnly must not be in ToolAnnotations JSON"
     );
 }
 
-// KF-1: Canonical *Hint names are emitted in tools/list (verified at protocol layer).
-// This test uses the router directly without a real plugin instance so it only asserts the
-// protocol-version upgrade; wire-name injection is covered by test_annotation_wire_names.
 #[test]
 fn test_router_discover() {
     let mut router = McpRouter::new();
@@ -141,7 +134,6 @@ fn test_router_discover() {
 
     assert_eq!(resp["jsonrpc"], "2.0");
     assert_eq!(resp["id"], 1);
-    // KF-1: protocolVersion must report 2025-03-26
     assert_eq!(resp["result"]["supportedVersions"][0], "2026-07-28");
     assert_eq!(
         resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
@@ -161,13 +153,11 @@ fn test_router_notifications_ignored() {
 fn test_router_cancellation_tracking() {
     let mut router = McpRouter::new();
 
-    // Cancellation notification should return None (no JSON-RPC response for notifications)
     let resp = router.handle_jsonrpc(
         r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "call-100"}}"#,
     );
     assert!(resp.is_none());
 
-    // A tool call using that cancelled ID before execution should be rejected with -32800
     let call_resp = router.handle_jsonrpc(
         r#"{"jsonrpc":"2.0","id":"call-100","method":"tools/call","params":{"name":"test__run","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
@@ -178,7 +168,6 @@ fn test_router_cancellation_tracking() {
 fn test_router_cancel_request_method() {
     let mut router = McpRouter::new();
 
-    // $/cancelRequest support
     let resp = router.handle_jsonrpc(
         r#"{"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": "req-42"}}"#,
     );
@@ -223,7 +212,6 @@ fn test_router_read_only_enforcement() {
     let mut router = McpRouter::new();
     router.set_read_only(true);
 
-    // Any call to non-registered or non-read-only tool in read-only mode is denied with -32600
     let resp = router.handle_jsonrpc(
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ns__write_file","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
     );
@@ -237,8 +225,6 @@ fn test_router_read_only_enforcement() {
     );
 }
 
-// KF-1: Verify ToolAnnotations serialises with *Hint canonical names and that the
-// transitional legacy aliases are accepted on deserialisation (both spellings).
 #[test]
 fn test_annotation_wire_names_canonical() {
     let ann = ToolAnnotations {
@@ -250,23 +236,19 @@ fn test_annotation_wire_names_canonical() {
     };
 
     let json = serde_json::to_value(&ann).unwrap();
-    // Canonical names must be present
     assert_eq!(json["readOnlyHint"], true);
     assert_eq!(json["destructiveHint"], false);
     assert_eq!(json["idempotentHint"], true);
     assert_eq!(json["openWorldHint"], false);
     assert_eq!(json["title"], "My Tool");
-    // Old names must NOT appear (legacy injection is done in the protocol layer only)
     assert!(json.get("readOnly").is_none());
     assert!(json.get("destructive").is_none());
     assert!(json.get("idempotent").is_none());
     assert!(json.get("openWorld").is_none());
 }
 
-// KF-7: Accept both old and new spellings from plugin tool lists.
 #[test]
 fn test_annotation_both_spellings_deserialise() {
-    // New canonical spelling (what a spec-compliant plugin sends)
     let new_json = r#"{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}"#;
     let ann_new: ToolAnnotations = serde_json::from_str(new_json).expect("New spelling parses");
     assert_eq!(ann_new.read_only_hint, Some(true));
@@ -274,7 +256,6 @@ fn test_annotation_both_spellings_deserialise() {
     assert_eq!(ann_new.idempotent_hint, Some(true));
     assert_eq!(ann_new.open_world_hint, Some(false));
 
-    // Legacy spelling (what a pre-2025-03-26 plugin sends)
     let old_json =
         r#"{"readOnly": true, "destructive": false, "idempotent": true, "openWorld": false}"#;
     let ann_old: ToolAnnotations = serde_json::from_str(old_json).expect("Old spelling parses");
@@ -284,8 +265,6 @@ fn test_annotation_both_spellings_deserialise() {
     assert_eq!(ann_old.open_world_hint, Some(false));
 }
 
-// KF-3: resources/list always includes rune://<ns>/rules regardless of --read-only mode.
-// (Tested indirectly here; a real plugin instance would be needed for a full integration test.)
 #[test]
 fn test_router_resources_list_empty_no_instances() {
     let mut router = McpRouter::new();
@@ -295,7 +274,6 @@ fn test_router_resources_list_empty_no_instances() {
     assert!(resp["result"]["resources"].as_array().unwrap().is_empty());
 }
 
-// KF-3: tools/list in read-only mode with no registered instances returns [] (not an error).
 #[test]
 fn test_router_tools_list_read_only_empty() {
     let mut router = McpRouter::new();
@@ -310,12 +288,10 @@ fn test_router_tools_list_read_only_empty() {
     );
 }
 
-// KF-2/KF-4: error shapes for known codes.
 #[test]
 fn test_error_shapes() {
     let mut router = McpRouter::new();
 
-    // -32800: cancelled
     let cancel_resp = router.handle_jsonrpc(
         r#"{"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "x1"}}"#,
     );
@@ -325,7 +301,6 @@ fn test_error_shapes() {
         ;
     assert!(call.is_none());
 
-    // -32600: permission denied (allowlist)
     let mut r2 = McpRouter::new();
     r2.set_allowed_tools(vec!["ns__only".to_string()]);
     let perm = r2
@@ -333,18 +308,15 @@ fn test_error_shapes() {
         .unwrap();
     assert_eq!(perm["error"]["code"], -32600);
 
-    // -32601: unknown method
     let unk = router
         .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":11,"method":"no_such_method","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)
         .unwrap();
     assert_eq!(unk["error"]["code"], -32601);
 
-    // -32700: parse error
     let parse_err = router.handle_jsonrpc("not json").unwrap();
     assert_eq!(parse_err["error"]["code"], -32700);
 }
 
-// Exercise the actual tools/list wire path with a portable native MCP fixture.
 #[test]
 fn native_wire_rules_and_timeout() {
     use rune_kit::runtime::{NativeSidecar, PluginInstance};
@@ -435,7 +407,6 @@ fn native_wire_rules_and_timeout() {
         timed_out["error"],
         serde_json::json!({"code":-32000,"message":"Tool execution timed out after 1 seconds"})
     );
-    // A killed native child must respawn successfully for discovery.
     assert_eq!(
         router
             .handle_jsonrpc(r#"{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#)

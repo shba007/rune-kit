@@ -227,7 +227,6 @@ fn native_discovery_preserves_schema_and_reports_bad_facts() {
     let mut empty_router = McpRouter::new();
     empty_router.register("empty".into(), PluginInstance::Native(Box::new(empty)));
     assert_eq!(list(&mut empty_router)["result"]["tools"], json!([]));
-    // A healthy plugin must not hide a second plugin's discovery failure.
     let params = HashMap::from([(
         "RUNE_FIXTURE_TOOLS".into(),
         json!({"tools":[tool_payload(json!({"readOnlyHint":true,"readOnly":false}))]}).to_string(),

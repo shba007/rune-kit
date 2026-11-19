@@ -136,8 +136,6 @@ fn kernel_boundary_confines_writes_reads_network_and_descendants() {
     );
     match running.replies.recv_timeout(Duration::from_secs(5)) {
         Ok(result) => assert_eq!(result, "denied"),
-        // Windows socket-provider initialization can fail when its implicit
-        // profile writes are denied. Termination is also a closed boundary.
         #[cfg(windows)]
         Err(mpsc::RecvTimeoutError::Disconnected) => {}
         other => panic!("Network denial neither completed nor stopped the process: {other:?}"),

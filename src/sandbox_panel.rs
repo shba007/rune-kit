@@ -305,7 +305,6 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect();
             if size.0 >= 48 {
-                // RUNE_ASCII replaces the Unicode middle dot, not this disclosure.
                 assert!(text.contains("NOT ACTIVE"));
                 assert!(text.contains("No loaded plugins"));
             }

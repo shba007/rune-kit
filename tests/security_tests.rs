@@ -5,7 +5,6 @@ use tar::Builder;
 
 #[test]
 fn test_resolve_host_env_params_filters_sensitive_secrets() {
-    // Set a sensitive token and an allowed parameter
     unsafe {
         std::env::set_var("GITHUB_TOKEN", "ghp_secret_token_12345");
         std::env::set_var("AWS_SECRET_ACCESS_KEY", "aws_super_secret");
@@ -15,11 +14,9 @@ fn test_resolve_host_env_params_filters_sensitive_secrets() {
 
     let params = resolve_host_env_params();
 
-    // Verify secret tokens are not present
     assert!(!params.contains_key("github_token"));
     assert!(!params.contains_key("aws_secret_access_key"));
 
-    // Verify allowed parameters are captured
     assert_eq!(
         params.get("custom_key").map(String::as_str),
         Some("safe_value")
@@ -37,7 +34,6 @@ fn test_tar_slip_rejection() {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&dest).unwrap();
 
-    // Construct a malicious tar archive in memory with a traversal entry
     let mut tar_bytes = Vec::new();
     {
         let enc = GzEncoder::new(&mut tar_bytes, Compression::default());
@@ -55,7 +51,6 @@ fn test_tar_slip_rejection() {
         builder.finish().unwrap();
     }
 
-    // Attempting to extract this archive must fail with path traversal error
     let gz = flate2::read::GzDecoder::new(&tar_bytes[..]);
     let mut archive = tar::Archive::new(gz);
 

@@ -1,4 +1,3 @@
-//! Shared Kit storage. The public gateway and private plugin ABI use the same paths.
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +22,6 @@ pub fn installation_root() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("Cannot resolve user home"))
 }
 
-/// Sandbox state stays under the actual home, or inside an explicit data override.
 pub fn sandbox_root() -> io::Result<PathBuf> {
     if let Some(value) = std::env::var_os("RUNE_KIT_DATA_DIR") {
         let path = PathBuf::from(value);
@@ -38,8 +36,6 @@ fn default_root(home: &Path, data: Option<&Path>) -> io::Result<PathBuf> {
     let destination = home.join(".rune/tools");
     let visible = home.join("rune/tools");
     let mut sources = vec![visible.clone()];
-    // A prior completed migration consumed the platform directory. Its retained
-    // originals may be stale; never import them over the current visible tree.
     if !visible.join(".legacy-migration-complete").is_file()
         && let Some(data) = data
     {
@@ -89,7 +85,6 @@ fn migrate_sources(sources: &[PathBuf], destination: &Path) -> io::Result<()> {
         }
         active.push(source);
     }
-    // Preflight every source and duplicate destination before publishing any file.
     let mut destinations = std::collections::HashMap::<PathBuf, PathBuf>::new();
     for (from, to) in &planned {
         if let Some(previous) = destinations.insert(to.clone(), from.clone())
@@ -114,8 +109,6 @@ fn migrate_sources(sources: &[PathBuf], destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Copy only known managed entries; originals remain available for recovery.
-/// Existing identical files are accepted. Conflicts fail without overwriting.
 pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
     if source == destination || marker(source, destination).is_file() || !source.exists() {
         return Ok(());
@@ -133,7 +126,6 @@ pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
     ] {
         collect(&source.join(name), &destination.join(name), &mut files)?;
     }
-    // Validate every conflict before making any changes.
     for (from, to) in &files {
         if to.exists() && std::fs::read(from)? != std::fs::read(to)? {
             return Err(io::Error::other(format!(
@@ -150,7 +142,6 @@ pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Stage alongside the target; a crash cannot leave a partial payload at its final path.
         let stage = to.with_file_name(format!(
             ".rune-kit-migrate-{}-{}",
             std::process::id(),
@@ -174,7 +165,6 @@ pub fn migrate(source: &Path, destination: &Path) -> io::Result<()> {
                     "Migration validation failed; original retained",
                 ));
             }
-            // Hard-link publication is atomic and fails if another writer created the target.
             std::fs::hard_link(&stage, &to)?;
             Ok(())
         })();
@@ -364,7 +354,6 @@ mod hidden_root_tests {
         std::fs::write(legacy.join("installed.json"), b"old registry").unwrap();
         assert!(default_root(&temp, Some(&data)).is_err());
         assert!(!temp.join(".rune/tools/installed.json").exists());
-        // Prior releases explicitly left this marker after validating the platform copy.
         std::fs::write(
             old.join(".legacy-migration-complete"),
             b"validated original migration",

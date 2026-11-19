@@ -2,8 +2,6 @@ use super::Policy;
 use std::io;
 
 fn close_inherited_descriptors() -> io::Result<()> {
-    // Landlock does not revoke pre-existing file descriptors. The dedicated
-    // worker must drop everything except its three protocol/diagnostic pipes.
     #[cfg(target_os = "linux")]
     {
         if unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) } != 0 {
@@ -58,7 +56,6 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
         "/etc/ld.so.cache",
     ] {
         if std::path::Path::new(path).exists() {
-            // HardRequirement rejects directory-only rights on a regular file.
             let read = if std::path::Path::new(path).is_dir() {
                 AccessFs::from_read(abi)
             } else {
@@ -86,7 +83,6 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
             AccessFs::ReadFile | AccessFs::Execute,
         ))
         .map_err(|e| error(&e))?;
-    // Workspaces hold data. Executing newly written workspace payloads is denied.
     let writable = AccessFs::from_all(abi) & !AccessFs::Execute;
     rules = rules
         .add_rule(PathBeneath::new(
@@ -106,7 +102,6 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn seccomp() -> io::Result<()> {
-    // Reject foreign syscall ABIs before interpreting syscall numbers.
     #[cfg(target_arch = "x86_64")]
     const ARCH: u32 = 0xc000003e;
     #[cfg(target_arch = "aarch64")]
@@ -163,7 +158,6 @@ fn seccomp() -> io::Result<()> {
             filter.push(equal(syscall as u32, 0, 1));
             filter.push(statement(0x06, 0x00050000 | libc::EPERM as u32));
         }
-        // x32 syscall numbers bypass the native x86_64 number table.
         #[cfg(target_arch = "x86_64")]
         {
             filter.push(libc::sock_filter {
@@ -180,7 +174,6 @@ fn seccomp() -> io::Result<()> {
             filter: filter.as_mut_ptr(),
         };
         // SAFETY: only the single-threaded worker calls this; the BPF buffer
-        // remains alive throughout prctl and the kernel copies it synchronously.
         if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0
             || unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) }
                 != 0
@@ -227,7 +220,6 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
     }
     let executable = quoted(&policy.executable);
     let workspace = quoted(&policy.workspace);
-    // dyld needs executable mappings in addition to ordinary file reads.
     profile.push_str(&format!(
         "(allow file-read* file-map-executable process-exec* (literal {executable}))\n\
          (allow file-read* file-write* (subpath {workspace}))"
@@ -235,7 +227,6 @@ pub fn apply(policy: &Policy) -> io::Result<()> {
     let profile = CString::new(profile).map_err(io::Error::other)?;
     let mut error = std::ptr::null_mut();
     // SAFETY: the worker is single-threaded, strings are NUL terminated and the
-    // optional error allocation is released through Apple's matching API.
     let result = unsafe { sandbox_init(profile.as_ptr(), 0, &mut error) };
     if !error.is_null() {
         unsafe { sandbox_free_error(error) };

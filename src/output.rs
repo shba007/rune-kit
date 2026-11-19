@@ -190,8 +190,6 @@ pub fn render_list_table(lockfile: &Lockfile) -> Table {
     t
 }
 
-/// Skills are content, not code — so the table shows NAME/VERSION/AUTHOR/DESCRIPTION
-/// rather than the build columns plugins have.
 pub fn render_skills_table<S: SkillRow>(skills: &[S]) -> Table {
     let mut t = Table::new(84)
         .column(Column::fixed("NAME", 18))
@@ -246,7 +244,7 @@ mod tests {
         let rows = t.format_rows();
         let row = &rows[0];
         assert_eq!(row.len(), 100);
-        let flex_start = 16 + 1 + 10 + 1 + 14 + 1 + 12 + 1; // 56
+        let flex_start = 16 + 1 + 10 + 1 + 14 + 1 + 12 + 1;
         assert_eq!(row[flex_start..].len(), 44);
         assert_eq!(&row[flex_start..flex_start + 11], "DESCRIPTION");
         assert!(

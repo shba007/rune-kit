@@ -1,4 +1,3 @@
-//! Local, sessionless MCP 2026-07-28 Streamable HTTP transport.
 use axum::{
     Router,
     body::Body,
@@ -771,7 +770,6 @@ async fn handle(State(state): State<Arc<Shared>>, request: axum::extract::Reques
             "Expected one JSON-RPC request or notification",
         );
     }
-    // No core HTTP notifications exist in this revision. Cancellation is stream closure.
     if id.is_none() {
         return error(
             StatusCode::BAD_REQUEST,
@@ -1002,8 +1000,6 @@ async fn handle(State(state): State<Arc<Shared>>, request: axum::extract::Reques
             let _ = tx.blocking_send(response);
         }
     });
-    // The body owns the cancellation guard. Dropping a single stream only affects
-    // this internal sequence, even when unrelated clients reuse JSON-RPC IDs.
     let ready = match tokio::time::timeout(Duration::from_secs(35), ready_rx).await {
         Ok(Ok(value)) => value,
         Ok(Err(_)) => {
@@ -1160,7 +1156,6 @@ pub struct EmbeddedServer {
 }
 
 impl EmbeddedServer {
-    /// Change one plugin's filesystem root between requests. This is not an HTTP/MCP API.
     pub fn set_plugin_param(&self, plugin: &str, key: &str, value: &str) -> Result<(), String> {
         if self.is_finished() {
             return Err("Embedded server is stopped".into());
@@ -1172,12 +1167,6 @@ impl EmbeddedServer {
             .set_embedded_root(&self.state.router, plugin, key, value)
     }
 
-    /// Run one plugin in staged mode (or return it to direct access). Staged plugins
-    /// never see the real folder: their reads and writes go through the host
-    /// file-access broker, so originals change only through the reviewed
-    /// `/management/changes` apply. Other plugins and remotes are untouched. Requires
-    /// a WASM plugin with a configured `allowed_dir`; the folder is approved for the
-    /// plugin automatically. Not persisted; call again after each restart.
     pub fn set_plugin_staged(&self, plugin: &str, staged: bool) -> Result<(), String> {
         if self.is_finished() {
             return Err("Embedded server is stopped".into());
@@ -1197,7 +1186,6 @@ impl EmbeddedServer {
             .is_embedded_staged(plugin)
     }
 
-    /// Current non-secret configuration; unknown plugins return an empty map.
     pub fn plugin_params(&self, plugin: &str) -> std::collections::BTreeMap<String, String> {
         self.state
             .configuration

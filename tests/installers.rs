@@ -379,7 +379,6 @@ fn windows_default_hidden_install_deduplicates_path_and_preserves_visible_infer(
     )
     .unwrap();
     let ps_quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "''"));
-    // Execute the real installer; isolate only OS profile/registry APIs in a copy.
     let script=fs::read_to_string(support::root().join("install.ps1")).unwrap()
         .replace("[Environment]::GetFolderPath('UserProfile')",&ps_quote(&home))
         .replace("[Environment]::GetEnvironmentVariable('Path', 'User')",&format!("([IO.File]::ReadAllText({}))",ps_quote(&path_record)))
@@ -423,8 +422,6 @@ fn windows_default_hidden_install_deduplicates_path_and_preserves_visible_infer(
         b"hidden infer"
     );
     let entries = fs::read_to_string(path_record).unwrap();
-    // Windows CI may expose TEMP as RUNNER~1 while PowerShell expands it to
-    // runneradmin. Compare directory identity, retaining order/dedup assertions.
     let hidden = fs::canonicalize(&hidden).unwrap();
     let visible = fs::canonicalize(&visible).unwrap();
     let paths: Vec<_> = entries.split(';').map(Path::new).collect();

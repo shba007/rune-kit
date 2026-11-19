@@ -1,4 +1,3 @@
-//! Versioned registry configuration and artifact integrity metadata.
 use crate::package::PackageError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

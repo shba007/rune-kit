@@ -122,9 +122,6 @@ pub struct InstalledMcp {
     pub manifest: Option<PluginManifest>,
 }
 
-/// Canonical MCP tool facts. Both wire spellings are accepted, including equal pairs.
-/// tools/list retains legacy output throughout 0.3.x; removal requires a minor-version
-/// release and an explicit migration note. Legacy input remains supported.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 pub struct ToolAnnotations {
     #[serde(rename = "readOnlyHint", skip_serializing_if = "Option::is_none")]
@@ -139,8 +136,6 @@ pub struct ToolAnnotations {
     pub title: Option<String>,
 }
 
-// A present fact must be a boolean. Null is not a valid declaration and must not
-// fall through to a permissive value in the other spelling or manifest defaults.
 fn annotation_bool<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<bool>, D::Error> {

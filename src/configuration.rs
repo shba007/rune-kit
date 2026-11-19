@@ -1,4 +1,3 @@
-//! Dashboard edits replace only this server's plugin instances, between requests.
 use rune_kit_core::registry::ConfigurationField;
 use rune_kit_core::{
     ExecutionKind, McpRouter, NativeSidecar, PluginInstance, PluginManifest, WasmPluginInstance,
@@ -78,9 +77,6 @@ impl Plugin {
         plugin.load(&settings)
     }
 
-    /// Per-plugin staged mode for embedded hosts. The real folder is never mounted
-    /// into the guest; reads and writes go through the host file-access broker, so
-    /// originals change only when the host applies a reviewed change.
     fn load_staged(&self, settings: &Settings, root: &str) -> Result<PluginInstance, String> {
         if self.kind != ExecutionKind::Wasm {
             return Err("Only WASM plugins can run in staged mode".into());
@@ -312,7 +308,6 @@ impl Configuration {
         }
         let mut next = self.settings.clone();
         let values = next.plugins.entry(name.to_owned()).or_default();
-        // Store the manifest field key, as setup does, and remove older root aliases.
         values.remove("allowed_dir");
         if let Some(config) = &plugin.manifest.configuration {
             for (key, field) in &config.fields {
@@ -346,8 +341,6 @@ impl Configuration {
         Ok(())
     }
 
-    /// Switch one plugin between direct and staged file access. Nothing is saved to
-    /// disk; the setting lasts for this server's lifetime.
     pub(crate) fn set_embedded_staged(
         &mut self,
         router: &Arc<Mutex<McpRouter>>,
@@ -629,7 +622,6 @@ impl Configuration {
     }
 }
 
-// Only the embedding API uses this validator; setup's field selection is unchanged.
 fn validate_embedded_folder(value: &str) -> Result<String, String> {
     let path = std::path::Path::new(value);
     if !path.is_absolute() || !path.is_dir() {

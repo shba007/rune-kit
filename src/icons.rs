@@ -1,4 +1,3 @@
-//! Package icons published in the tools registry, fetched once and served locally.
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},

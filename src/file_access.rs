@@ -1,5 +1,3 @@
-//! Version 1 of the cooperative plugin file-access API. Approval and copy-back
-//! are host-only operations; guest requests can never authorize original writes.
 use crate::sandbox::{PathKind, Sandbox, check_links};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -120,11 +118,8 @@ pub enum Operation {
     WriteFile,
     DeleteFile,
     ListDirectory,
-    /// Additive: file or folder existence, kind, size and modification time.
     Stat,
-    /// Additive: stage creation of one folder (parent must exist, possibly as staged work).
     CreateDirectory,
-    /// Additive: stage removal of one folder that is empty once staged work is applied.
     RemoveDirectory,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,7 +136,6 @@ pub struct Stat {
     pub kind: Option<ChangeKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
-    /// Seconds since the Unix epoch; the staged file's time for staged content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified: Option<u64>,
 }
@@ -226,7 +220,6 @@ impl Drop for Lock {
 }
 
 impl Broker {
-    /// Apply only the exact inventory item whose approval token was reviewed by the caller.
     pub fn apply_approved(
         root: PathBuf,
         plugin: &str,
@@ -254,7 +247,6 @@ impl Broker {
         Err(error("The reviewed item changed or no longer exists"))
     }
 
-    /// Read one existing transaction inventory without creating its directories or pruning backups.
     pub fn inspect(root: PathBuf, plugin: &str) -> io::Result<ChangesView> {
         Sandbox::inspect(root.clone(), &[plugin.to_owned()])?;
         if !root.try_exists()? {
@@ -347,8 +339,6 @@ impl Broker {
         let resolved = match fs::canonicalize(path) {
             Ok(p) => p,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                // Walk up to the nearest real ancestor. Every missing folder between it
-                // and the target must itself be staged work.
                 let mut missing = Vec::new();
                 let mut current = path;
                 let base = loop {
@@ -369,7 +359,6 @@ impl Broker {
                 let mut resolved = base;
                 for (index, name) in missing.iter().rev().enumerate() {
                     if index > 0 {
-                        // `resolved` is a missing intermediate folder here.
                         let staged = self.current(&resolved)?;
                         if !staged.is_some_and(|c| c.kind == ChangeKind::Directory && !c.deleted) {
                             return Err(io::Error::new(
@@ -437,7 +426,6 @@ impl Broker {
             Err(e) => Err(e),
         }
     }
-    /// What the plugin sees at `path`: staged work wins over the original.
     fn overlay(&self, path: &Path, change: &Option<Change>) -> io::Result<Option<ChangeKind>> {
         if let Some(change) = change {
             return Ok((!change.deleted).then_some(change.kind));
@@ -565,7 +553,6 @@ impl Broker {
                     _ => ChangeKind::Directory,
                 };
                 let existing = self.overlay(&path, &change)?;
-                // Re-creating a folder staged for removal simply cancels that removal.
                 if let (Operation::CreateDirectory, Some(c)) = (&request.operation, &change)
                     && c.deleted
                     && c.kind == ChangeKind::Directory
@@ -609,7 +596,6 @@ impl Broker {
                             ));
                         }
                         if change.as_ref().is_some_and(|c| c.baseline.is_none()) {
-                            // Created by staged work and never applied: nothing to review.
                             fs::remove_file(self.change(&path))?;
                             return Ok(reply(false));
                         }
@@ -738,7 +724,6 @@ impl Broker {
             .ok_or_else(|| error("No staged changes for this path"))
     }
 
-    /// Host-only. The caller must present this review and receive user approval.
     pub fn apply_review(&self, review: &Review) -> io::Result<()> {
         let _lock = self.lock()?;
         let path = self.authorize(&review.path)?;
@@ -765,7 +750,6 @@ impl Broker {
         if digest != review.staged_digest {
             return Err(error("Staged content changed; review it again"));
         }
-        // Fail before any receipt exists, so a blocked apply leaves nothing to resolve.
         if !change.deleted && !path.parent().is_some_and(|p| p.is_dir()) {
             return Err(error("Apply the parent folder first"));
         }
@@ -850,7 +834,6 @@ impl Broker {
         Ok(records)
     }
 
-    /// Host-only recovery. Original edits made after copy-back require resolution.
     pub fn restore(&self, info: &RecoveryInfo) -> io::Result<()> {
         let _lock = self.lock()?;
         let path = self.authorize(&info.path)?;
@@ -874,7 +857,6 @@ impl Broker {
                         fs::create_dir(&path)?;
                     }
                 } else if path.is_dir() {
-                    // Fails, keeping the record, while anything still lives inside.
                     fs::remove_dir(&path)?;
                 }
             }
@@ -917,7 +899,6 @@ impl Broker {
             .collect())
     }
 
-    /// Completed recovery backups expire after seven days; unresolved ones never do.
     pub fn prune_completed(&self) -> io::Result<usize> {
         let _lock = self.lock()?;
         let mut count = 0;
@@ -1302,7 +1283,6 @@ mod tests {
             .stat
             .unwrap();
         assert!(stat.exists && stat.kind == Some(ChangeKind::File) && stat.size == Some(8));
-        // A folder whose parent does not exist yet cannot be staged first.
         assert!(f.request(Operation::CreateDirectory, &nested, &[]).is_err());
         assert!(
             f.request(Operation::CreateDirectory, &sub, &[])
@@ -1310,7 +1290,6 @@ mod tests {
                 .staged
         );
         f.request(Operation::CreateDirectory, &nested, &[]).unwrap();
-        // Creating an existing or already staged folder is a no-op.
         f.request(Operation::CreateDirectory, &sub, &[]).unwrap();
         f.request(Operation::CreateDirectory, &root, &[]).unwrap();
         assert!(!sub.exists());
@@ -1320,7 +1299,6 @@ mod tests {
             .stat
             .unwrap();
         assert!(stat.exists && stat.kind == Some(ChangeKind::Directory));
-        // A move is read + write + delete; every part is a reviewable item.
         let data = f
             .request(Operation::ReadFile, &f.file, &[])
             .unwrap()
@@ -1358,7 +1336,6 @@ mod tests {
         assert!(f.request(Operation::ReadFile, &sub, &[]).is_err());
         let reviews = f.broker.reviews().unwrap();
         assert_eq!(reviews.len(), 4);
-        // A child cannot be applied before its folder; nothing is left to resolve.
         let child = reviews
             .iter()
             .find(|r| r.path.ends_with("moved.txt"))
@@ -1373,7 +1350,6 @@ mod tests {
         assert!(f.broker.reviews().unwrap().is_empty());
         let mut recoveries = f.broker.recoveries().unwrap();
         assert_eq!(recoveries.len(), 4);
-        // Undo deepest paths first, then the deleted original.
         recoveries.sort_by(|a, b| {
             b.path
                 .components()
@@ -1404,7 +1380,6 @@ mod tests {
         );
         let review = f.broker.reviews().unwrap().remove(0);
         assert!(review.deleted && review.kind == ChangeKind::Directory);
-        // Creating it again cancels the staged removal.
         f.request(Operation::CreateDirectory, &empty, &[]).unwrap();
         assert!(f.broker.reviews().unwrap().is_empty());
         f.request(Operation::RemoveDirectory, &empty, &[]).unwrap();
@@ -1416,14 +1391,12 @@ mod tests {
             .restore(&f.broker.recoveries().unwrap().remove(0))
             .unwrap();
         assert!(empty.is_dir());
-        // A folder created and removed in staged work leaves nothing to review.
         let scratch = root.join("scratch");
         f.request(Operation::CreateDirectory, &scratch, &[])
             .unwrap();
         f.request(Operation::RemoveDirectory, &scratch, &[])
             .unwrap();
         assert!(f.broker.reviews().unwrap().is_empty());
-        // Removing a folder that still has files is refused.
         fs::write(empty.join("file.txt"), b"x").unwrap();
         assert!(f.request(Operation::RemoveDirectory, &empty, &[]).is_err());
     }

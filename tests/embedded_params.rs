@@ -115,7 +115,6 @@ async fn embedded_folder_updates_are_atomic_live_and_host_only() {
     other.path = dir.path().join("other.wasm");
     std::fs::copy(&payload, &other.path).unwrap();
     router.register("other".into(), other.load(config.settings()).unwrap());
-    // Reloading any plugin except fs would now fail.
     std::fs::remove_file(&other.path).unwrap();
     config.plugins.push(other);
     config.plugins.push(plugin);
@@ -182,7 +181,6 @@ async fn embedded_folder_updates_are_atomic_live_and_host_only() {
     )
     .await;
     assert_eq!(reply["result"]["content"][0]["text"], "A", "{reply}");
-    // A lock held by setup blocks saving without changing the running plugin or file.
     std::fs::write(dir.path().join("dashboard.lock"), b"").unwrap();
     assert!(
         server
@@ -191,7 +189,6 @@ async fn embedded_folder_updates_are_atomic_live_and_host_only() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), saved);
     std::fs::remove_file(dir.path().join("dashboard.lock")).unwrap();
-    // Failed plugin construction also leaves disk and live configuration alone.
     std::fs::rename(&payload, payload.with_extension("away")).unwrap();
     assert!(
         server
@@ -218,7 +215,6 @@ async fn embedded_folder_updates_are_atomic_live_and_host_only() {
         settings["plugins"]["fs"]["folder"],
         server.plugin_params("fs")["allowed_dir"]
     );
-    // MCP arguments and method names cannot reach the host configuration API.
     let denied = rpc(
         &client,
         &server.endpoint,

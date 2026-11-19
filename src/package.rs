@@ -179,7 +179,6 @@ impl Default for PackageManager {
 }
 
 impl PackageManager {
-    /// Read configuration for an exact published plugin version without installing it.
     pub async fn fetch_version_metadata(
         &self,
         name: &str,
@@ -447,8 +446,6 @@ impl PackageManager {
 
         verify_cli_checksum(&archive_bytes, &expected)?;
         let binary_bytes = extract_single_binary(&archive_bytes, "rune-kit")?;
-        // Update the invoked executable, including explicit custom locations.
-        // The installer establishes ~/.rune; never replace Infer or a second Kit.
         activate_cli_update(&std::env::current_exe()?, &binary_bytes)?;
 
         Ok(tag)
@@ -937,7 +934,6 @@ impl PackageManager {
             )));
         }
 
-        // Validate all selected checksum entries before downloading or probing code.
         for url in [wasm_url, native_url].into_iter().flatten() {
             metadata.checksum(url)?;
         }
@@ -1054,7 +1050,6 @@ impl SkillManager {
         let mut results = Vec::new();
         if let Some(map) = index.as_object() {
             for (name, item) in map {
-                // Strictly filter for skill entries; plugin packages in rune-tools do not qualify as skills
                 let is_skill = item.get("type").and_then(|v| v.as_str()) == Some("skill")
                     || item.get("kind").and_then(|v| v.as_str()) == Some("skill");
 
@@ -1442,7 +1437,6 @@ fn backup_modified_skill(
         }
         Ok(())
     }
-    // Refuse symbolic links before walking, so neither inspection nor backup follows them.
     fn check_tree(dir: &Path) -> Result<(), PackageError> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
@@ -1582,7 +1576,6 @@ fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, Pac
 
     let clean_binary = binary_name.to_ascii_lowercase();
     let mut expected_names = vec![clean_binary.clone(), format!("{}.exe", clean_binary)];
-    // Existing releases used rune/rune.exe. Keep them readable by the renamed CLI.
     if clean_binary == "rune-kit" {
         expected_names.extend(["rune".to_string(), "rune.exe".to_string()]);
     }
@@ -1609,7 +1602,6 @@ fn extract_single_binary(bytes: &[u8], binary_name: &str) -> Result<Vec<u8>, Pac
             }
         }
 
-        // Fallback: single file in archive
         let mut non_dir_files = Vec::new();
         for i in 0..zip.len() {
             let file = zip
@@ -1771,7 +1763,6 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
         .to_string();
     let stripped_native = format!("{}-native", stripped_name);
 
-    // 1. Exact stem match
     for c in &candidates {
         let stem = c
             .file_stem()
@@ -1783,7 +1774,6 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
         }
     }
 
-    // 2. Native sidecar stem match (e.g. "rune-browser-native", "browser-native", "browser")
     for c in &candidates {
         let stem = c
             .file_stem()
@@ -1795,7 +1785,6 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
         }
     }
 
-    // 3. Starts with match (e.g. "rune-browser-x86_64-pc-windows-msvc")
     for c in &candidates {
         let stem = c
             .file_stem()
@@ -1807,7 +1796,6 @@ fn find_executable_in_dir(dir: &Path, expected_name: &str) -> Result<PathBuf, Pa
         }
     }
 
-    // 4. Fallback: single executable in archive
     if candidates.len() == 1 {
         return Ok(candidates[0].clone());
     }

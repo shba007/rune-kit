@@ -70,7 +70,6 @@ impl Drop for Grant {
 }
 fn acl(path: &[u16], sid: PSID, rights: u32, mode: ACCESS_MODE) -> io::Result<()> {
     // SAFETY: all API pointers refer to live NUL-terminated paths, SID buffers
-    // and stack outputs. Windows allocations are freed with LocalFree.
     unsafe {
         let mut descriptor = std::ptr::null_mut();
         let mut old = std::ptr::null_mut();
@@ -155,8 +154,6 @@ fn profile_directory(sid: PSID) -> io::Result<std::path::PathBuf> {
     }
 }
 fn deny_writes(path: &Path) -> io::Result<Grant> {
-    // Deny writes for every SID on this fresh, disposable profile.
-    // Keep READ_CONTROL/WRITE_DAC available for cleanup.
     let path = wide(path);
     let mut bytes = vec![0; SECURITY_MAX_SID_SIZE as usize];
     let mut length = bytes.len() as u32;
@@ -229,7 +226,6 @@ impl Drop for Child {
 }
 
 pub(super) fn spawn(policy: &Policy, params: &HashMap<String, String>) -> io::Result<Process> {
-    // All resources are RAII-owned, including failures before ResumeThread.
     unsafe {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -374,8 +370,6 @@ pub(super) fn spawn(policy: &Policy, params: &HashMap<String, String>) -> io::Re
             "SYSTEMROOT".into(),
             std::env::var("SystemRoot").map_err(|_| io::Error::other("SystemRoot unavailable"))?,
         );
-        // CreateProcess resolves the AppContainer profile using LOCALAPPDATA.
-        // This is a Windows bootstrap requirement, not an inherited credential.
         environment.insert(
             "LOCALAPPDATA".into(),
             std::env::var("LOCALAPPDATA").map_err(|_| {
@@ -410,8 +404,6 @@ pub(super) fn spawn(policy: &Policy, params: &HashMap<String, String>) -> io::Re
             TerminateProcess(raw(&process), 1);
             return Err(error);
         }
-        // Userenv initializes (and may replace) profile ACLs during process
-        // creation. Deny its auxiliary storage after creation, while suspended.
         let denied = (|| -> io::Result<()> {
             let mut pending = vec![profile_directory.clone()];
             while let Some(path) = pending.pop() {

@@ -1,4 +1,3 @@
-//! Small HTTP MCP test client. Private native pipes remain internal only.
 use serde_json::{Value, json};
 use std::{
     error::Error,

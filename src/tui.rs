@@ -1,4 +1,3 @@
-//! Dashboard attached to the local HTTP server; no independent plugin probes.
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
@@ -35,7 +34,6 @@ impl Drop for Restore {
     }
 }
 
-/// Attached to this server's observed state; never probes separate plugin processes.
 pub fn server_dashboard(
     state: Arc<std::sync::Mutex<crate::server::Snapshot>>,
     router: Arc<std::sync::Mutex<rune_kit_core::McpRouter>>,
@@ -152,7 +150,7 @@ pub fn server_dashboard(
                     tools_view = !tools_view;
                     selected = 0;
                 }
-                KeyCode::Char('r') => { /* next frame reads fresh server state */ }
+                KeyCode::Char('r') => {}
                 _ => {}
             }
         }
@@ -213,7 +211,6 @@ fn draw_server(
         "rune-kit",
         Style::new().fg(Color::White).bold(),
     )];
-    // The nine dot rows follow public/logo.svg's circle grid and relative radii.
     let logo = if area.height >= 26 {
         vec![
             "      · · ·",
@@ -505,8 +502,6 @@ pub(crate) fn compatibility(frame: &mut Frame) {
         }
     }
 }
-// Discovery uses this server's HTTP dispatcher and permission ceilings. It never
-// creates a second plugin runtime or changes server configuration.
 fn discover(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) {
     let endpoint = state.lock().unwrap().endpoint.clone();
     let result = (|| -> Result<()> {
@@ -530,7 +525,6 @@ fn discover(state: Arc<std::sync::Mutex<crate::server::Snapshot>>) {
                 "io.modelcontextprotocol/clientCapabilities":{}}}}))
             .send()?
             .error_for_status()?;
-        // Consume the stream so the request is not cancelled by a disconnect.
         let body = response.text()?;
         if body
             .lines()

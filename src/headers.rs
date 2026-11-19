@@ -38,8 +38,6 @@ pub fn mirror_values(schema: &Value, args: &Value) -> Result<Vec<(String, String
     Ok(values)
 }
 
-// Validate definitions as well as values; annotations below arrays, refs or
-// composition keywords are not statically reachable and cannot be trusted.
 pub fn annotations(schema: &Value) -> Result<Vec<(Vec<String>, String)>, String> {
     fn walk(
         node: &Value,

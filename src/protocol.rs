@@ -18,7 +18,6 @@ pub struct CancelState {
     pub wasm_handle: Option<extism::CancelHandle>,
 }
 
-// Holds only the currently executing instance, never unrelated idle WASM guests.
 struct WasmOperation(Arc<Mutex<Option<extism::CancelHandle>>>);
 impl WasmOperation {
     fn track(instance: &PluginInstance, slot: Arc<Mutex<Option<extism::CancelHandle>>>) -> Self {
@@ -45,8 +44,6 @@ pub struct McpRouter {
 }
 
 pub fn namespace_resource_uri(namespace: &str, local_uri: &str) -> String {
-    // Artifact paths are valid router keys, but their separators and drive
-    // prefixes must not become URI delimiters. Ordinary package names are unchanged.
     let namespace: String = namespace
         .bytes()
         .map(|byte| {
@@ -177,8 +174,6 @@ impl McpRouter {
         }
     }
 
-    /// The HTTP worker serializes instances. Only this operation's disconnect flag
-    /// can interrupt its native process or WASM execution; client IDs are not keys.
     pub fn handle_cancellable(&mut self, request: &str, cancel: Arc<AtomicBool>) -> Option<Value> {
         let operation_cancel = Arc::new(AtomicBool::new(false));
         self.request_cancel = operation_cancel.clone();
@@ -230,7 +225,6 @@ impl McpRouter {
         result
     }
 
-    /// Transport-independent public MCP dispatch. Plugin calls retain their private ABI.
     pub fn handle_jsonrpc(&mut self, request_str: &str) -> Option<Value> {
         let req: Value = match serde_json::from_str(request_str) {
             Ok(value) => value,
@@ -424,7 +418,6 @@ impl McpRouter {
                             for tool in tools {
                                 let full_name = format!("{}__{}", ns, tool.name);
 
-                                // Allowlist filter
                                 if let Some(ref allowlist) = self.config.allowed_tools
                                     && !allowlist.iter().any(|allowed| {
                                         allowed == &full_name || allowed == &tool.name
@@ -433,7 +426,6 @@ impl McpRouter {
                                     continue;
                                 }
 
-                                // Read-only filter
                                 if self.config.read_only {
                                     let is_read_only = tool
                                         .annotations
@@ -471,9 +463,6 @@ impl McpRouter {
                                     tool_obj["outputSchema"] = schema.clone();
                                 }
                                 if let Some(ref ann) = tool.annotations {
-                                    // Emit canonical MCP spec 2025-03-26 names (readOnlyHint, etc.)
-                                    // AND legacy names (readOnly, etc.) throughout 0.3.x.
-                                    // Removal requires a minor release and a migration note.
                                     let mut ann_json =
                                         serde_json::to_value(ann).unwrap_or_default();
                                     if let Some(v) = ann.read_only_hint {
@@ -510,14 +499,11 @@ impl McpRouter {
                         }
                     }
                 }
-                // Never turn failed discovery into a successful empty or partial list.
                 if !discovery_errors.is_empty() {
                     discovery_errors.sort();
                     return Some(json!({"jsonrpc":"2.0", "id":id,
                         "error":{"code":-32000,"message":format!("Tool discovery failed: {}", discovery_errors.join("; "))}}));
                 }
-                // KF-3: Warn on stderr when read-only mode yields no tools (all tools are
-                // write-capable), so operators can detect a misconfigured --read-only deployment.
                 if self.config.read_only && all_tools.is_empty() {
                     eprintln!(
                         "[Rune Warning] --read-only mode is active but no tools are declared \
@@ -556,7 +542,6 @@ impl McpRouter {
                         }
                     }
 
-                    // Expose declared rules resource for each namespace
                     all_resources.push(json!({
                         "uri": namespace_resource_uri(ns, "rules"),
                         "name": format!("{} Rules & Capabilities", ns),
@@ -610,7 +595,6 @@ impl McpRouter {
 
                 let (ns, tool_name) = (parts[0], parts[1]);
 
-                // 1. Allowlist enforcement
                 if let Some(ref allowlist) = self.config.allowed_tools
                     && !allowlist
                         .iter()
@@ -626,7 +610,6 @@ impl McpRouter {
                     }));
                 }
 
-                // 2. Read-only profile enforcement
                 if self.config.read_only {
                     let is_read_only = if let Some(instance) = self.instances.get_mut(ns) {
                         let _operation =
@@ -662,7 +645,6 @@ impl McpRouter {
 
                 let req_id_str = normalize_id(id);
 
-                // 3. Pre-call cancellation check
                 if self.cancelled_ids.lock().unwrap().contains(&req_id_str) {
                     return Some(json!({
                         "jsonrpc": "2.0",
@@ -824,7 +806,6 @@ impl McpRouter {
             "resources/read" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                // Resolve encoded URI namespaces back to the exact registered key.
                 let route = self
                     .instances
                     .keys()
